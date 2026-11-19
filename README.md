@@ -33,6 +33,11 @@ Two themes share everything: **Jarvis** (blue) and **Rose** (red), each with its
 | **Research** | A research mode that runs searches in parallel and checks every cited link against what was really fetched, marking uncertain claims |
 | **Machine care** | Health report, quiet warnings (a small chip only when something stays bad), a supervisor that restarts whatever dies, a restart limiter, a clock screen saver |
 | **Clock** | A HUD clock screen after a quiet time you choose (30 s to 30 min or never), seconds, 12/24 hour, burn-in shift, about 15% of one core while showing |
+| **Many devices** | Your Mac can ask the Go things, hand it notes, links and its clipboard (`jarvis_inbox.py ask|note|link|clip`); your iPhone can talk to it ("Hey Jarvis" through a Shortcut, home Wi-Fi only, off until you turn it on) and share notes and links to it; reminders reach your phone; a tidy outbox shows what was sent and whether the Mac opened it |
+| **Self-care** | "update yourself" (backup, safe pull, health check, automatic rollback), backups, and "improve yourself": it learns from "that's wrong", proposes a small code fix on a copy with a read-and-edit-only helper, and applies it only when you approve |
+| **Calendar and email** | Read-only: your private iCal address and an email app password, sender and subject lines only; "what's on my calendar", "any new email" |
+| **Look extras** | Remember a place ("remember this shelf", "where did I put my charger"), read text from a picture, watch a camera for one condition |
+| **Desk tools** | Launcher, clipboard history, scratchpad, named window layouts, activity panel, microphone self-test, large text and high contrast |
 | **Tools** | Translate mode with per-language voices, read-this-to-me (screenshot + OCR), unit/currency/time answers, QR codes |
 
 ## Screenshots

@@ -4,6 +4,8 @@ from the Go and opens links or files here. Standard library only.
   python3 jarvis_inbox.py pair   -> type the pairing code shown on the Go
   python3 jarvis_inbox.py run    -> listen (it also tells the Go "Mac connected")
   python3 jarvis_inbox.py install -> optional: start listening by itself every time you log in (launchd)
+  python3 jarvis_inbox.py ask "what is on my calendar"   -> ask the Go and print its answer
+  python3 jarvis_inbox.py note "buy milk" | link https://... | clip   -> hand a note, a link or your clipboard to the Go
 """
 import getpass, hashlib, json, os, subprocess, sys, time, urllib.parse, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -111,6 +113,48 @@ def pair():
     print("Paired. Now run: python3 jarvis_inbox.py run")
 
 
+def to_go(kind, text):
+    """Send something TO the Go (signed, on the private "up" topic). For ask: wait for the answer."""
+    cfg = json.load(open(CFG))
+    key = bytes.fromhex(cfg["key"])
+    up = jp.up_topic(key)
+    body = {"type": kind, "text": text} if kind != "link" else {"type": "link", "url": text}
+    signed = jp.sign(key, body)
+    mid = json.loads(signed)["nonce"]
+    req = urllib.request.Request(f"{SERVER}/{up}", data=signed.encode(), method="POST", headers={"User-Agent": "jarvis-mac"})
+    urllib.request.urlopen(req, timeout=15).read()
+    if kind != "ask":
+        print("Sent to the Go.")
+        return
+    t0, seen = time.time(), set()
+    while time.time() - t0 < 75:                                  # the answer comes back on the main topic, signed, with our message id
+        try:
+            with urllib.request.urlopen(urllib.request.Request(f"{SERVER}/{cfg['topic']}/json?poll=1&since={int(t0) - 2}", headers={"User-Agent": "jarvis-mac"}), timeout=15) as r:
+                for ln in r:
+                    ev = json.loads(ln)
+                    if ev.get("event") != "message":
+                        continue
+                    p = jp.verify(key, ev.get("message", ""), seen)
+                    if p and p.get("type") == "reply" and p.get("id") == mid:
+                        print(p.get("text", ""))
+                        return
+        except Exception:
+            pass
+        time.sleep(2)
+    print("(no answer: is the Go on and online?)")
+
+
+def say():
+    kind = sys.argv[1]
+    if kind == "clip":
+        text = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+    else:
+        text = " ".join(sys.argv[2:])
+    if not text.strip():
+        sys.exit("nothing to send")
+    to_go(kind, text.strip())
+
+
 def install():
     """Start listening automatically at login (a launchd agent in your own account; it only needs the internet, it opens no ports)."""
     plist = os.path.expanduser("~/Library/LaunchAgents/com.jarvis.inbox.plist")
@@ -132,4 +176,4 @@ def install():
 
 
 if __name__ == "__main__":
-    {"pair": pair, "run": run, "install": install}.get(sys.argv[1] if len(sys.argv) > 1 else "", lambda: print(__doc__))()
+    {"pair": pair, "run": run, "install": install, "ask": say, "note": say, "link": say, "clip": say}.get(sys.argv[1] if len(sys.argv) > 1 else "", lambda: print(__doc__))()

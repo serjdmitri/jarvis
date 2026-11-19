@@ -6,7 +6,7 @@ from . import settings
 
 SPEED_MIN, SPEED_MAX, STEP = 0.7, 1.6, 0.15
 IDLE_CHOICES = (0.5, 1, 2, 5, 10, 30, 0)            # minutes; 0 = never
-DEFAULTS = {"term_wake": False, "machine_warnings": True, "auto_visuals": True, "stay_out": True, "idle_minutes": 5, "clock24": False, "clock_seconds": True, "followup": False}
+DEFAULTS = {"show_heard": True, "large_text": False, "high_contrast": False, "update_check": False, "onboarded": False, "notify_phone_reminders": True, "phone_voice": False, "phone_voice_speak": False, "phone_control_from_phone": False, "term_wake": False, "machine_warnings": True, "auto_visuals": True, "stay_out": True, "idle_minutes": 5, "clock24": False, "clock_seconds": True, "followup": False}
 
 
 def get(key):
@@ -22,7 +22,7 @@ def speed(persona):
 
 def clean(key, value):
     """-> the validated value, or raises ValueError."""
-    if key in ("auto_visuals", "stay_out", "clock24", "clock_seconds", "machine_warnings", "term_wake"):
+    if key in ("auto_visuals", "stay_out", "clock24", "clock_seconds", "machine_warnings", "term_wake", "phone_voice", "show_heard", "large_text", "high_contrast", "update_check", "onboarded", "notify_phone_reminders", "phone_voice_speak", "phone_control_from_phone"):
         return bool(value)
     if key == "speed":
         v = round(float(value), 2)
@@ -52,7 +52,7 @@ def _volume():
 
 
 def public(persona):
-    return {"volume": _volume(), "home": (settings.get("home_area") or "").split(",")[0][:60], "speed": speed(persona), "auto_visuals": bool(get("auto_visuals")), "machine_warnings": bool(get("machine_warnings")), "term_wake": bool(get("term_wake")), "stay_out": bool(get("stay_out")), "idle_minutes": get("idle_minutes"),
+    return {"volume": _volume(), "home": (settings.get("home_area") or "").split(",")[0][:60], "speed": speed(persona), "auto_visuals": bool(get("auto_visuals")), "machine_warnings": bool(get("machine_warnings")), "show_heard": bool(get("show_heard")), "large_text": bool(get("large_text")), "high_contrast": bool(get("high_contrast")), "term_wake": bool(get("term_wake")), "stay_out": bool(get("stay_out")), "idle_minutes": get("idle_minutes"),
             "clock24": bool(get("clock24")), "clock_seconds": bool(get("clock_seconds"))}
 
 
@@ -63,10 +63,10 @@ def parse_command(text, persona):
     """-> {"set": {key: value}, "say": reply} or None."""
     low = text.lower().strip(" .?!")
     cur = speed(persona)
-    if re.fullmatch(r"(?:please )?(?:speak|talk|go) (?:a (?:bit|little) )?(?:faster|quicker)|speed up|(?:please )?(?:speak|talk) (?:a (?:bit|little) )?(?:more )?quickly", low):
+    if re.fullmatch(r"(?:please )?(?:(?:can|could|would|will) you (?:please )?)?(?:speak|talk|go) (?:a (?:bit|little) )?(?:faster|quicker)(?: please)?|speed up(?: please)?|(?:please )?(?:(?:can|could|would|will) you (?:please )?)?(?:speak|talk) (?:a (?:bit|little) )?(?:more )?quickly(?: please)?", low):
         v = min(SPEED_MAX, round(cur + STEP, 2))
         return {"set": {"speed": v}, "say": "Faster." if v > cur else "That's the fastest I go."}
-    if re.fullmatch(r"(?:please )?(?:speak|talk|go) (?:a (?:bit|little) )?(?:slower|more slowly)|slow down", low):
+    if re.fullmatch(r"(?:please )?(?:(?:can|could|would|will) you (?:please )?)?(?:speak|talk|go) (?:a (?:bit|little) )?(?:slower|more slowly)(?: please)?|slow down(?: please)?", low):
         v = max(SPEED_MIN, round(cur - STEP, 2))
         return {"set": {"speed": v}, "say": "Slower." if v < cur else "That's the slowest I go."}
     if re.fullmatch(r"(?:please )?(?:normal|regular|default|usual) (?:speaking )?speed|(?:please )?(?:speak|talk) normally|reset (?:the )?(?:speaking )?speed", low):

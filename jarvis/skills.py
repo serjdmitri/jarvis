@@ -394,12 +394,85 @@ def visual_command(text):
     return None
 
 
+def send_command(text):
+    """"send that to my phone/Mac/computer", "text me the address", "what did I send": sends only when your words say send/text/share, then logs it."""
+    import re as _re
+    from . import outbox
+    low = text.lower().strip(" .?!")
+    if _re.fullmatch(r"(?:what|which) (?:did i|have i|have you|did you) (?:send|sent)(?: (?:to )?(?:my )?(?:phone|mac|computer))?(?: today| lately| recently)?|show (?:me )?(?:the |my )?(?:outbox|sent items|what (?:you|i) sent)", low):
+        return {"speech": "Here is what was sent.", "outbox": True}
+    if _re.fullmatch(r"(?:please )?(?:resend|send again|try (?:sending )?again)(?: that)?", low):
+        return {"speech": "Sending it again.", "resend": True}
+    r = outbox.parse(text)
+    if not r:
+        return None
+    return {"speech": "On it.", "send": r}
+
+
+def mic_command(text):
+    from . import micheck
+    r = micheck.parse_command(text)
+    return {"speech": "Listening to the microphone level." if r["kind"] == "test" else "Lowering the boost.", "mic": r["kind"]} if r else None
+
+
+def calmail_command(text):
+    """Calendar and email questions (read-only) and their setup cards."""
+    from . import calmail
+    r = calmail.parse_command(text)
+    if r:
+        return {"speech": "Here is the setup.", "calmail": r["which"]}
+    a = calmail.ask(text) or calmail.ask_mail(text)
+    if a:
+        speech, lines = a
+        return {"speech": speech, **({"cards": [{"type": "list", "title": "Calendar" if "alendar" in speech[:12] or "Today" in speech[:6] else "Email", "items": lines}]} if lines else {})}
+    return None
+
+
+def desk_command(text):
+    from . import desk
+    r = desk.parse_command(text)
+    if not r:
+        return None
+    if r["kind"] == "tool":
+        return {"speech": "", "tool": desk.TOOLS[r["tool"]]}
+    if r["kind"] == "save":
+        return {"speech": "", "layout_save": r["name"]}
+    if r["kind"] == "open":
+        lay = desk.get_layout(r["name"])
+        return {"speech": f"Opening {r['name']}.", "layout_open": lay} if lay else {"speech": f"I don't have a layout called {r['name']}. Say: save this layout as {r['name']}."}
+    names = desk.layout_names()
+    return {"speech": ("Your layouts: " + ", ".join(names) + ".") if names else "You have no saved layouts yet."}
+
+
 def phonecam_command(text):
     from . import phonecam
     r = phonecam.parse_command(text)
     if not r:
         return None
     return {"speech": "Here is the phone camera setup.", "phonecam": "setup"} if r["kind"] == "setup" else {"speech": "Using your phone camera for look.", "phonecam": "use"}
+
+
+def meta_command(text):
+    """Update, backup, restore, self-improve and publishing: all explicit requests, all confirmed with a button."""
+    import re as _re
+    from . import improve, updater
+    r = updater.parse_command(text)
+    if r:
+        return {"speech": {"check": "Checking for updates.", "update": "Updating.", "backup": "Backing up.", "restore": "Restoring the newest backup."}[r["kind"]], "meta": r["kind"]}
+    low = text.lower().strip(" .?!")
+    if _re.fullmatch(r"(?:please )?(?:show me around|take the tour|give me a tour|how do i use (?:you|this|jarvis)|what can you do)", low):
+        return {"speech": "Here is a quick tour.", "meta": "tour"}
+    if _re.fullmatch(r"(?:please )?(?:set ?up|setup|connect|configure|open) (?:the |my )?(?:iphone|phone) (?:voice|shortcut|endpoint)|(?:hey jarvis|jarvis) (?:from|on) (?:my )?iphone(?: setup)?", low):
+        return {"speech": "Here is the iPhone voice setup.", "meta": "voicecard"}
+    if _re.fullmatch(r"(?:please )?(?:improve yourself|learn from your mistakes|fix yourself|get better)", low):
+        return {"speech": "I'll look at where I went wrong and propose a fix. It takes a few minutes and changes nothing until you approve.", "meta": "improve"}
+    if _re.fullmatch(r"(?:please )?apply (?:the |that )?(?:improvement|change|fix)", low):
+        return {"speech": "Applying it.", "meta": "improve_apply"}
+    if _re.fullmatch(r"(?:please )?(?:discard|drop|cancel|reject) (?:the |that )?(?:improvement|change|fix)", low):
+        return {"speech": "Discarded.", "meta": "improve_discard"}
+    if _re.fullmatch(r"(?:please )?(?:prepare|check) (?:a |the )?(?:public|github) (?:update|release)|(?:please )?publish (?:to github|the public repo(?:sitory)?)", low):
+        return {"speech": "Preparing the public update and scanning it for private data.", "meta": "publish"}
+    return None
 
 
 def window_command(text):
@@ -661,7 +734,7 @@ def handle(text, persona="jarvis"):
     """-> {"speech": str, "cards": [...]} when answered locally, else None."""
     if not text:
         return None
-    for fn in (ui_command, lambda t: prefs_command(t, persona), visual_command, phonecam_command, spotify_command, sound_command, idle_command, quiet_command, qr_command, instant_command, alerts_command, music_command, scene_command, translate_command, read_command, health_command, memory_command, maps_command, extras_command, dictate_command, research_command, video_command, window_command, open_command, mac_command, volume_command, timer_command, set_home, lambda t: weather(t, persona)):
+    for fn in (ui_command, lambda t: prefs_command(t, persona), meta_command, desk_command, calmail_command, mic_command, send_command, visual_command, phonecam_command, spotify_command, sound_command, idle_command, quiet_command, qr_command, instant_command, alerts_command, music_command, scene_command, translate_command, read_command, health_command, memory_command, maps_command, extras_command, dictate_command, research_command, video_command, window_command, open_command, mac_command, volume_command, timer_command, set_home, lambda t: weather(t, persona)):
         try:
             r = fn(text)
         except Exception as e:                        # network down etc: fall through to the brain

@@ -15,6 +15,13 @@ Have this project's `mac/` folder on your Mac (clone the repository or download 
 
 To get newer Mac files: `git pull` in your clone, or download the ZIP again. After an update, run `pair` again once so the Mac can reply to the Go.
 
+## Talk to the Go from the Mac
+Once paired (and after one more `pair` so the Mac knows the reply channel), from the same folder:
+- `python3 jarvis_inbox.py ask "what is on my calendar today"` asks the Go and prints its answer
+- `python3 jarvis_inbox.py note "buy milk"` and `python3 jarvis_inbox.py link https://example.org` hand a note or a link to the Go (it shows a card and keeps them in its inbox)
+- `python3 jarvis_inbox.py clip` hands the Go whatever is on your Mac clipboard
+These go over the same signed, private channel. An ask is answered by the same limited path as the iPhone voice endpoint (no terminal, no phone control), at most 12 messages a minute.
+
 ## What the Mac says when it refuses something
 It prints one plain line for every message it drops and why: not an https link, file type not allowed, file too big, the file changed on the way, bad signature, too old, or already handled. If the message was genuinely signed, the Go shows "Mac did not open it: <reason>" on a card. A message with a bad signature is only printed on the Mac (anyone could have sent it, so the Go is not told).
 

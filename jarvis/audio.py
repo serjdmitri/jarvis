@@ -12,6 +12,30 @@ import numpy as np
 RATE = 16000  # what whisper wants
 
 
+MAX_RECORD_S = 120
+
+
+def _die_with_parent():
+    """Linux: ask the kernel to SIGKILL this child when its parent process dies."""
+    import ctypes
+    try:
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, 9)          # PR_SET_PDEATHSIG = 1, SIGKILL = 9
+    except Exception:
+        pass
+
+
+def cleanup_stale(max_age_s=600):
+    """Delete old request recordings left in /tmp (files nobody is writing any more)."""
+    import glob
+    import time as _t
+    for f in glob.glob(os.path.join(tempfile.gettempdir(), "jarvis-rec-*.wav")):
+        try:
+            if _t.time() - os.path.getmtime(f) > max_age_s:
+                os.unlink(f)
+        except OSError:
+            pass
+
+
 class Recorder:
     """Start/stop recorder writing 16 kHz mono s16 WAV."""
 
@@ -26,8 +50,13 @@ class Recorder:
         os.close(fd)
         self.proc = subprocess.Popen(
             ["pw-record", "--rate", str(RATE), "--channels", "1", "--format", "s16", self.path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=_die_with_parent,        # a recorder can never outlive Jarvis (a restart used to leave it writing a growing file in /tmp for hours)
         )
+        import threading
+        proc = self.proc
+        t = threading.Timer(MAX_RECORD_S, lambda: proc.poll() is None and proc.kill())              # and no request is longer than two minutes
+        t.daemon = True
+        t.start()
 
     def snapshot(self):
         """int16 samples recorded so far (readable while pw-record is still writing)."""

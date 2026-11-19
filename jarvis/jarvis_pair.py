@@ -28,6 +28,11 @@ def ack_topic(code):
     return "jv-" + m[16:32].hex()
 
 
+def up_topic(key):
+    """A THIRD private topic for the other direction (Mac -> Go): derived from the shared key, so only a paired device knows it."""
+    return "jv-" + hashlib.sha256(b"up|" + key).hexdigest()[:16]
+
+
 def _canon(d):
     return json.dumps(d, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 

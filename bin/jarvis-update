@@ -1,0 +1,13 @@
+#!/bin/sh
+# jarvis-update check|update|backup|restore [file]   (the same things you can say: "update yourself", "back up yourself")
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
+PY=.venv/bin/python; [ -x "$PY" ] || PY=python3
+exec "$PY" - "$@" <<'PYEOF'
+import sys
+from jarvis import updater
+c = sys.argv[1] if len(sys.argv) > 1 else "check"
+if c == "check": print(updater.check())
+elif c == "update": ok, m = updater.update(); print(m); updater.restart_server() if ok and "Updated" in m else None
+elif c == "backup": print(updater.backup())
+elif c == "restore": print(updater.restore(sys.argv[2] if len(sys.argv) > 2 else None)[1])
+PYEOF

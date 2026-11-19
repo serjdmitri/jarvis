@@ -1,0 +1,6 @@
+#!/bin/sh
+# jarvis-publish            sync the allowlisted code into ~/jarvis-public, scan it for private values, show the changes
+# jarvis-publish --yes "message"   ... and commit + push if the scan is clean
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
+PY=.venv/bin/python; [ -x "$PY" ] || PY=python3
+exec "$PY" -m jarvis.publish "$@"

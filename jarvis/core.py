@@ -12,7 +12,7 @@ import wave
 
 import numpy as np
 
-from . import audio, camera, look, phonecam, maps, intents, prefs, soundtest, spotify, memory, music, net, quiet, readscreen, scenes, dictate, extras, research, video, config, convo, endpoint, mac, opener, phone, personas, settings, skills, stt, tts
+from . import audio, camera, companion, continuity, lookmem, micheck, improve, look, outbox, phonecam, maps, intents, prefs, soundtest, spotify, memory, music, net, quiet, readscreen, scenes, dictate, extras, research, video, config, convo, endpoint, mac, opener, phone, personas, settings, skills, stt, tts
 from .brain import make_brain
 
 MIN_RECORD_S = 0.4
@@ -237,6 +237,7 @@ class Assistant:
         self.state = "loading"
         self.shot = None
         self.last_source = ""
+        audio.cleanup_stale()
         self.look = {"open": False, "path": None, "boxes": [], "sel": None, "source": "", "live": False}
         self.source = "auto"         # what "look" captures: auto (USB webcam, else screen) | screen | window | camera
         self.t0 = 0.0
@@ -432,6 +433,8 @@ class Assistant:
             self.on_ui(bool(local["ui"]["hidden"]))
         if local.get("idle"):
             opener.NOTIFY({"t": "idle", "on": True})
+        if local.get("meta"):
+            threading.Thread(target=self.run_meta, args=(local["meta"],), daemon=True).start()
         if local.get("loccard") and self.on_card:
             self.on_card(maps.location_card(local["loccard"] == "today"))
         if local.get("phonecam") == "setup" and self.on_card:
@@ -462,6 +465,23 @@ class Assistant:
             threading.Thread(target=self.run_research, args=(local["research"],), daemon=True).start()
         if local.get("video"):
             threading.Thread(target=self.run_video, args=(local["video"],), daemon=True).start()
+        if local.get("tool"):
+            opener.NOTIFY({"t": "tool", "open": [local["tool"]]})
+        if local.get("layout_open"):
+            opener.NOTIFY({"t": "tool", "open": local["layout_open"]})
+        if local.get("layout_save"):
+            opener.NOTIFY({"t": "layout_ask", "name": local["layout_save"]})
+        if local.get("calmail") and self.on_card:
+            from . import calmail
+            self.on_card(calmail.setup_card(local["calmail"]))
+        if local.get("mic"):
+            threading.Thread(target=(self.mic_test if local["mic"] == "test" else (lambda: self.say(micheck.fix()))), daemon=True).start()
+        if local.get("send"):
+            threading.Thread(target=self.run_send, args=(local["send"]["to"], local["send"]["what"]), daemon=True).start()
+        if local.get("resend"):
+            threading.Thread(target=self.resend_failed, daemon=True).start()
+        if local.get("outbox"):
+            threading.Thread(target=self.show_outbox, daemon=True).start()
         if local.get("macsend"):
             threading.Thread(target=self.run_macsend, args=(local["macsend"],), daemon=True).start()
         if local.get("mac") in ("pair", "show_code"):
@@ -493,6 +513,8 @@ class Assistant:
     def _answer_local(self, text, local, turn, T):
         """A skill answered (no Claude): speak it, show its cards."""
         self.on_msg("you", text)
+        continuity.add(text or "", local.get("speech") or "")
+        opener.NOTIFY({"t": "heard", "text": (text or "")[:140], "route": "skill: " + (next((k for k in local if k not in ("speech", "cards")), "answer"))})
         for k, v in (local.get("set") or {}).items():             # a spoken preference change is applied BEFORE the reply, so "Faster." is already faster
             try:
                 self.apply_pref(k, v)
@@ -757,6 +779,40 @@ class Assistant:
                 return
             self.run_mac({"url": url})
 
+    def run_send(self, to, what):
+        """"send that to my phone / Mac / computer": works out what "that" is, sends it, and says what it sent."""
+        item = outbox.resolve(self, what, to)
+        if not item:
+            self.say("There is nothing to send yet." if what == "current" else f"I don't have {'a' if what != 'report' else 'a'} {what} to send.")
+            return
+        if to == "mac":
+            if item["kind"] == "url":
+                r = self.run_mac({"url": item["value"], "label": item["label"]})
+            elif item["kind"] == "file":
+                r = self.run_mac({"file": item["value"]})
+            else:
+                r = self.run_mac({"file": outbox.text_to_note_file(item["value"], item["label"])})
+        else:
+            if item["kind"] == "url":
+                r = self.run_phone({"title": "From Jarvis", "message": item["label"].capitalize(), "link": item["value"]})
+            elif item["kind"] == "file":
+                r = self.run_phone({"file": item["value"], "title": "From Jarvis", "message": item["label"].capitalize()})
+            else:
+                r = self.run_phone({"title": item["label"].capitalize()[:60], "message": item["value"][:900], **({"link": item["link"]} if item.get("link") else {})})
+        if r and r.get("ok"):
+            self.say(f"Sent {item['label']} to your {'Mac' if to == 'mac' else 'phone'}.")
+
+    def show_outbox(self):
+        L = outbox.lines(10)
+        self._meta_card("What I sent", L or ["Nothing sent yet."], [{"label": "RESEND LAST FAILED", "action": "outbox_resend"}] if any("FAILED" in x or "NOT OPENED" in x for x in L) else [])
+
+    def resend_failed(self):
+        for r in outbox.recent(20):
+            if r["status"] in ("failed", "dropped") and r.get("payload"):
+                (self.run_mac if r["to"] == "mac" else self.run_phone)(r["payload"])
+                return
+        self.say("Nothing failed.")
+
     def run_mac_pair(self, new):
         """'pair my Mac' / 'show the pairing code': the code goes to the screen ONLY (a card that removes itself); never spoken, logged or printed."""
         if new:
@@ -769,6 +825,7 @@ class Assistant:
         if self.on_card:
             self.on_card(mac.guide_card(code))
         threading.Thread(target=self.mac_watch, daemon=True).start()
+        companion.start(self)
 
     # --- LOOK: the full-screen view with labelled boxes -------------------------------------------
     def _look_frame(self, retake=True):
@@ -840,6 +897,173 @@ class Assistant:
         self.look["path"] = path
         return path
 
+    def _meta_card(self, title, lines, buttons=None, status=""):
+        if self.on_card:
+            self.on_card({"type": "guide", "gid": "meta", "title": title, "full": False, "paged": False, "status": status, "buttons": buttons or [],
+                          "steps": [{"n": i + 1, "text": ln} for i, ln in enumerate(lines)]})
+
+    def run_meta(self, kind):
+        """Update / backup / restore / improve / publish. Each one that changes anything waits for a button or a spoken "apply"."""
+        from . import publish, updater
+        try:
+            if kind == "tour":
+                self.on_card({"type": "guide", "gid": "tour", "title": "Quick tour", "full": True, "paged": True, "status": "", "steps": [
+                    {"n": 1, "text": "Tell me where you are, so maps and \"near me\" work.", "buttons": [{"label": "SET MY LOCATION", "action": "tour_loc"}], "hint": "You can type your address instead of saying it."},
+                    {"n": 2, "text": "Say \"Hey Jarvis\" (or hold SUPER+J) and ask anything: the weather, directions, \"show me pictures of a red panda\", \"remind me in ten minutes\".", "hint": "Say \"that's wrong\" if I get something wrong, and \"improve yourself\" later."},
+                    {"n": 3, "text": "Point a camera and say \"look at this\". Tap a box to ask about it.", "buttons": [{"label": "TRY LOOK NOW", "action": "tour_look"}]},
+                    {"n": 4, "text": "Everything else is in MENU and SETTINGS: terminal, files, the iPhone voice, pairing your Mac, the clock.", "buttons": [{"label": "DONE", "action": "tour_done"}]}]})
+            elif kind == "voicecard":
+                from . import voiceapi
+                self.on_card(voiceapi.guide_card(voiceapi.is_on()))
+            elif kind == "check":
+                c = updater.check()
+                self._meta_card("Updates", [c["message"]] + c["changes"], [{"label": "UPDATE NOW", "action": "update_now"}] if c.get("behind") and not c.get("dirty") else [])
+            elif kind == "update":
+                ok, msg = updater.update()
+                self._meta_card("Update", [msg])
+                if ok and "Updated" in msg:
+                    time.sleep(2)
+                    updater.restart_server()
+            elif kind == "backup":
+                self._meta_card("Backup", ["Saved " + os.path.basename(updater.backup()) + " in ~/jarvis-backups (settings, pairings, memory, notes)."])
+            elif kind == "restore":
+                ok, msg = updater.restore()
+                self._meta_card("Restore", [msg])
+            elif kind == "improve":
+                self._meta_card("Improve yourself", ["Working on a copy of my code (a few minutes). Nothing changes until you approve."])
+                r = improve.propose()
+                lines = [r["message"]] + ([r.get("summary", "")] if r.get("summary") else []) + ([f"Files: {', '.join(r['files'])}  ({r['diff_lines']} lines)", f"Checks: compiles {r['checks']['compiles']}, imports {r['checks']['imports']}"] if r.get("files") else [])
+                self._meta_card("Improve yourself", lines, [{"label": "APPLY", "action": "improve_apply"}, {"label": "DISCARD", "action": "improve_discard"}] if r.get("ok") else [])
+            elif kind == "improve_apply":
+                ok, msg = improve.apply()
+                self._meta_card("Improve yourself", [msg])
+                if ok:
+                    time.sleep(2)
+                    updater.restart_server()
+            elif kind == "improve_discard":
+                self._meta_card("Improve yourself", [improve.discard()])
+            elif kind == "publish":
+                r = publish.prepare()
+                if r["problems"]:
+                    self._meta_card("Public update", ["STOPPED: private data would go public:"] + [f"{f}: {w}" for f, w in r["problems"][:6]] + ["Nothing was copied."])
+                else:
+                    self._meta_card("Public update", [f"{len(r['changes'])} file(s) would change in the public repository.", "The scan found no private data."] + [c[:90] for c in r["changes"][:8]],
+                                    [{"label": "PUSH TO GITHUB", "action": "publish_push"}] if r["changes"] else [])
+        except Exception as e:
+            print("[meta] failed:", type(e).__name__, flush=True)
+            self._meta_card("Something failed", [type(e).__name__ + ": " + str(e)[:120]])
+
+    def phone_ask(self, text):
+        """A request that came from the iPhone endpoint -> ONE short plain sentence. Same router as voice on the Go, but visual effects (windows, cards) are not opened on a screen nobody is
+        watching, nothing is spoken on the Go unless "speak on the Go too" is on, and no terminal or phone control is reachable from here."""
+        from . import prefs
+        local = skills.handle(text, self.persona)
+        if local:
+            eff = {k: v for k, v in local.items() if k in ("timer", "volume", "mute", "scene", "focus", "translate", "set")}
+            try:
+                self._apply_effects(eff, None)
+            except Exception:
+                pass
+            if prefs.get("phone_voice_speak") and local.get("speech"):
+                self.say(local["speech"])
+            return local.get("speech") or "Done."
+        q = ("[PHONE REQUEST: reply with ONE short plain sentence, no JSON, no markdown. If you need the user's answer, end with a question mark.]\n" + skills.context_line() + memory.context(text) + text)
+        reply = self.brain.ask(q)
+        shown, _c, _o, _p, _m = split_reply_full(reply)
+        if prefs.get("phone_voice_speak") and shown:
+            self.say(shown)
+        return shown or "OK."
+
+    def _look_memory_command(self, cmd, text, turn, T):
+        op = cmd["op"]
+        if op == "find":
+            ent = lookmem.find(cmd["what"])
+            if not ent:
+                self._answer_local(text, {"speech": f"I don't remember seeing {cmd['what']}. Say: remember this, while I'm looking at the place."}, turn, T)
+                return
+            names = ", ".join(n.lower() for n in ent["names"][:4])
+            opener.NOTIFY({"t": "look", "op": "open", "src": "/lookmem/" + ent["file"], "source": "memory", "boxes": []})
+            self.look.update(open=True, path=str(lookmem.DIR / ent["file"]), source="memory", boxes=[], sel=None)
+            opener.NOTIFY({"t": "look", "op": "freeze"})
+            self._answer_local(text, {"speech": f"I saw it {lookmem.when(ent['t'])}, in the picture I saved as {ent['label']}." + (f" It showed {names}." if names else "")}, turn, T)
+        elif op == "read":
+            threading.Thread(target=self.look_read, daemon=True).start()
+            self._answer_local(text, {"speech": "Reading it."}, turn, T)
+        elif op == "watch":
+            self._answer_local(text, {"speech": self.start_watch(cmd["cond"])}, turn, T)
+        else:
+            self._watch_stop = True
+            self._answer_local(text, {"speech": "I stopped watching."}, turn, T)
+
+    def look_read(self):
+        """Local OCR of the picture (the open LOOK frame, else a fresh one): a card you can copy, send to the Mac, or turn into a list."""
+        from . import readscreen
+        try:
+            path = self._look_frame(retake=not self.look["open"])
+        except Exception as e:
+            self.say("I couldn't get a picture.")
+            return
+        txt = readscreen.ocr(path)
+        if not txt:
+            self.say("I couldn't find readable text in that picture.")
+            return
+        self._last_read = txt
+        self.on_card({"type": "guide", "gid": "readtext", "title": "Text I read", "full": False, "paged": False, "status": "", "steps": [{"n": 1, "text": txt[:900]}],
+                      "buttons": [{"label": "SEND TO MAC", "action": "read_to_mac"}, {"label": "ADD TO LIST", "action": "read_to_list"}, {"label": "SEND TO PHONE", "action": "read_to_phone"}]})
+        self.say(" ".join(txt.split())[:220])
+
+    def start_watch(self, cond):
+        """Watch a camera for ONE condition (every 20 s, at most 10 minutes, cameras only)."""
+        if getattr(self, "_watching", False):
+            return "I'm already watching for something. Say: stop watching."
+        if not (phonecam.get_url() or camera.usb_webcams()):
+            return "I need a camera for that, and I don't have a phone camera set up or a USB webcam. I won't use your screen."
+        self._watching, self._watch_stop = True, False
+        threading.Thread(target=self._watch_loop, args=(cond[:120],), daemon=True).start()
+        return f"Okay. I'll check every twenty seconds for up to ten minutes and tell you when {cond}."
+
+    def _watch_loop(self, cond):
+        from . import brain as _b
+        t0, bot = time.time(), _b.OneShotBrain(system="You look at one picture and answer ONLY the word YES or NO.")
+        try:
+            while time.time() - t0 < lookmem.WATCH_MAX_S and not self._watch_stop:
+                try:
+                    path = phonecam.grab(timeout=3) if phonecam.get_url() else camera.capture()
+                    ans = bot.ask(f"Is this true in the picture right now: {cond}? Reply only YES or NO.", image=path)
+                except Exception as e:
+                    print("[watch] check failed:", type(e).__name__, flush=True)
+                    ans = "NO"
+                bot.reset()
+                if ans.strip().upper().startswith("YES"):
+                    self.say(f"Heads up: {cond}.")
+                    self.on_card({"type": "text", "title": "I noticed", "text": cond})
+                    if phone.get_topic(create=False):
+                        self.run_phone({"title": "Jarvis noticed", "message": cond[:200]})
+                    return
+                time.sleep(lookmem.WATCH_EVERY_S)
+            if not self._watch_stop:
+                self.say(f"I watched for ten minutes and did not see that {cond}.")
+        finally:
+            self._watching = False
+
+    def mic_test(self):
+        pcm = micheck.ring_pcm(self, 5)
+        r = micheck.analyze(pcm) if pcm is not None else {"verdict": "nodata", "advice": "The microphone is not listening right now (muted or hands-free is off).", "rms": 0, "peak": 0, "clipped_pct": 0}
+        self._meta_card("Microphone test", [r["advice"], f"level {r['rms']}, peak {r['peak']}, clipped {r['clipped_pct']}%  (speak normally while you run this)"],
+                        [{"label": "FIX THE MIC", "action": "mic_fix"}] if r["verdict"] == "clipping" else [{"label": "TEST AGAIN", "action": "mic_test"}])
+        return r
+
+    def mic_watch(self):
+        """Every 10 minutes: if the always-on microphone has been clipping, say so quietly (a chip), once."""
+        pcm = micheck.ring_pcm(self, 8)
+        if pcm is not None:
+            r = micheck.analyze(pcm)
+            if r["verdict"] == "clipping" and not getattr(self, "_mic_warned", False):
+                self._mic_warned = True
+                opener.NOTIFY({"t": "health", "msg": "Microphone is clipping: say 'fix the mic'"})
+            elif r["verdict"] == "ok":
+                self._mic_warned = False
+
     def term_focus(self, on):
         """The terminal has keyboard focus: nothing you type may wake or trigger Jarvis, so hands-free listening is muted while it does (unless "wake word in the terminal" is on)."""
         from . import prefs
@@ -888,6 +1112,13 @@ class Assistant:
         """Send a link or file to the Mac (signed). Never prints the code, topic or key."""
         r = mac.send(payload)
         print("[mac]", r["message"], flush=True)
+        lbl = str(r.get("label") or payload.get("url") or os.path.basename(str(payload.get("file") or "")) or "item")[:70]
+        if r["ok"]:
+            rid = outbox.log("mac", lbl, "sent", payload=payload, msgid=r.get("id"))
+        else:
+            rid = outbox.log("mac", lbl, "failed", r["message"], payload=payload)
+            if r["message"].startswith("could not reach"):
+                outbox.retry_later(lambda: ((lambda q: (q["ok"], q["message"]))(mac.send(payload))), rid)
         extras.log_event("sent to your Mac" if r["ok"] else "could not send to your Mac", r.get("label") or r["message"] if not r["ok"] else r.get("label", ""))
         if r["ok"]:
             threading.Thread(target=lambda: mac.watch(self.mac_notify, 2), daemon=True).start()          # listen for the Mac's delivery reply
@@ -904,8 +1135,18 @@ class Assistant:
         if payload.get("current"):                                       # "text me that": the page in the frame, the last map link, or the last answer
             link = opener.EMBED.get("page_url")
             payload = {"title": "From Jarvis", "message": (self.recent[-1][1] if self.recent else "")[:300], "link": link}
-        r = phone.send(payload)
+        if payload.get("file"):
+            r = phone.send_file(payload["file"], payload.get("title", "From Jarvis"), payload.get("message", ""), payload.get("link"))
+        else:
+            r = phone.send(payload)
         print("[phone]", r["message"], flush=True)
+        lbl = str(payload.get("title") or "note")[:40] + (": " + str(payload.get("message") or payload.get("link") or "")[:36] if (payload.get("message") or payload.get("link")) else "")
+        if r["ok"]:
+            outbox.log("phone", lbl, "sent", "alerts have no read receipt", payload=payload)
+        else:
+            rid = outbox.log("phone", lbl, "failed", r["message"], payload=payload)
+            if r["message"].startswith("could not reach"):
+                outbox.retry_later(lambda: ((lambda q: (q["ok"], q["message"]))(phone.send_file(payload["file"]) if payload.get("file") else phone.send(payload))), rid)
         extras.log_event("sent to your phone" if r["ok"] else "could not send to your phone", "" if r["ok"] else r["message"])
         if r["ok"]:
             v = phone.validate(payload) or {}
@@ -943,6 +1184,8 @@ class Assistant:
                 self.on_card({"type": "text", "title": "Reminder" if entry.get("label") else "Timer", "text": entry.get("label") or "Time is up."})
             if not (entry.get("soft") and quiet.active()):        # a focus alert during quiet hours is the tone and the card only
                 self.say(entry["text"])
+            if entry.get("label") and not entry.get("soft") and phone.get_topic(create=False) and prefs.get("notify_phone_reminders"):      # a reminder also reaches your phone
+                threading.Thread(target=self.run_phone, args=({"title": "Reminder", "message": entry["label"][:200]},), daemon=True).start()
         tm = threading.Timer(max(0.0, entry["due"] - time.time()) if delay is None else delay, fire)
         tm.daemon = True
         tm.start()
@@ -1142,6 +1385,8 @@ class Assistant:
                     from . import wake
                     text = wake.strip_wake(text, personas.PERSONAS[self.persona]["name"])
             T.mark("transcript")
+            if text:
+                opener.NOTIFY({"t": "heard", "text": text[:140], "route": ""})                 # the small "heard: ..." line, so a wrong guess is easy to spot
             hint = False
             if conv:
                 if not text:                                            # nothing recognised: close quietly
@@ -1187,7 +1432,18 @@ class Assistant:
                 self._set("idle")
                 return
             skip_local, self._no_local = getattr(self, "_no_local", False), False
+            if text and improve.is_wrong(text) and self.recent:                          # "that's wrong": remember what went wrong, for "improve yourself"
+                improve.log("wrong", self.recent[-1][0], "answer was: " + self.recent[-1][1][:120])
+                self._answer_local(text, {"speech": "Noted. I'll learn from it when you say improve yourself."}, turn, T)
+                return
+            lm = lookmem.parse_command(text) if text and not shot and not self.translate_to else None
+            if lm and lm["op"] in ("find", "read", "watch", "unwatch"):
+                self._look_memory_command(lm, text, turn, T)
+                return
             lookq = None
+            if lm and lm["op"] == "remember":
+                self._remember_label = lm["label"] or "something"
+                text = "what do you see"                                        # a fresh look; the result is saved below
             if text and not shot and not self.translate_to:
                 cmd = look.parse_command(text, self.look)
                 if cmd and cmd["op"] != "box":                                    # clear / freeze / live / close / select: no brain needed (select can speak)
@@ -1219,7 +1475,7 @@ class Assistant:
             asked = question
             if self._carry:
                 question, self._carry = self._carry + question, ""
-            question = skills.context_line() + memory.context(asked) + question   # date/time + home area, plus the few remembered facts that match this question
+            question = skills.context_line() + memory.context(asked) + (continuity.context() if continuity.is_resume(asked) else "") + question   # date/time + home area, plus the few remembered facts that match this question
             if self.translate_to and text:                                       # translate mode: just the translation, nothing else
                 question = f"Translate the following into {self.translate_to}. Reply with ONLY the translation: no quotes, no notes, no English.\n{text}"
             if hint:
@@ -1304,6 +1560,10 @@ class Assistant:
                 boxes = look.validate_boxes(rawb)
                 print(f"[look] brain returned {len(rawb) if rawb is not None else 'no'} boxes, {len(boxes)} valid", flush=True)
                 self._look_show(boxes, shot)
+                if getattr(self, "_remember_label", None) and shot:
+                    ent = lookmem.remember(shot, self._remember_label, [b["name"] for b in boxes], shown)
+                    self._remember_label = None
+                    self.on_msg("sys", "Remembered this picture as: " + ent["label"])
             intent = intents.validate(split_intent(reply), text or "")
             if intent and intent["name"] != "answer":                   # the code, not the model, decides what runs: only an allowlisted intent, with the user's own words checked for sends
                 res = intents.run(intent)
@@ -1319,6 +1579,7 @@ class Assistant:
                     phone_act = mac_act = None if intent["name"] not in ("send_to_mac", "send_to_phone") else None
             elif split_intent(reply) is not None and not intent:
                 print("[intent] rejected:", str(split_intent(reply))[:100], flush=True)
+                improve.log("intent-rejected", text or "", str(split_intent(reply))[:120])
             if mac_act is not None:                                     # only when the user's own words mention their Mac
                 if mac.SEND_INTENT.search(text or ""):
                     threading.Thread(target=self.run_mac, args=(mac_act,), daemon=True).start()
@@ -1336,6 +1597,8 @@ class Assistant:
                 else:
                     print("[open] brain action rejected:", str(open_act)[:120], flush=True)
             self.recent = (self.recent + [(asked[:300], (shown or "")[:300])])[-6:]
+            continuity.add(text or "", shown or "")
+            opener.NOTIFY({"t": "heard", "text": (text or "")[:140], "route": ("brain: " + intent["name"]) if intent else "brain"})
             self.on_msg("jarvis", shown or "(on screen)")
             if self.on_card:
                 for c in cards:

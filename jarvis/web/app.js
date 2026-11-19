@@ -325,11 +325,11 @@ function slotPos(i, el) {
 function placeCard(el, i) { const [x, y] = slotPos(i, el); el.style.left = x + 'px'; el.style.top = y + 'px'; }
 function expandCard(c) {                                                             // card goes full screen; the orb shrinks to the bottom-right corner (derived from state)
   cards.forEach(o => o !== c && o.isFull && collapseCard(o));
-  c.isFull = true; c.el.classList.add('full'); c.el.style.transform = ''; c.x.textContent = 'CLOSE ✕'; if (c.ex) { c.ex.textContent = '▭'; c.ex.setAttribute('aria-label', 'minimise to a small panel'); } updatePager();
+  c.isFull = true; c.el.classList.add('full'); c.el.style.transform = ''; if (c.ex) c.ex.setAttribute('aria-label', 'back to a small panel'); updatePager();
   setTimeout(() => { c.map && c.map.invalidateSize(); c.redraw && c.redraw(); }, 60);
 }
 function collapseCard(c) {
-  c.isFull = false; c.el.classList.remove('full'); c.el.style.transform = ''; c.x.textContent = '✕'; if (c.ex) { c.ex.textContent = '⤢'; c.ex.setAttribute('aria-label', 'full screen'); } updatePager();
+  c.isFull = false; c.el.classList.remove('full'); c.el.style.transform = ''; if (c.ex) c.ex.setAttribute('aria-label', 'full screen'); updatePager();
   setTimeout(() => { c.map && c.map.invalidateSize(); c.redraw && c.redraw(); }, 60);
 }
 let batch = [], lastCardT = 0;
@@ -373,6 +373,8 @@ function guideBuild(c, body, card) {
       if (st.cmd) { const pre = document.createElement('pre'); pre.className = 'gcmd'; pre.textContent = st.cmd; const cp = document.createElement('button'); cp.className = 'tiny box gcopy'; cp.textContent = 'COPY';
         cp.onclick = () => { try { navigator.clipboard.writeText(st.cmd); cp.textContent = 'COPIED'; } catch (_) { cp.textContent = 'SELECT + COPY'; } }; box.append(pre, cp); }
       if (st.showCode && card.code) { const cd = document.createElement('div'); cd.className = 'gcode'; cd.textContent = card.code; box.append(cd); }
+      if (st.copy) { const row = document.createElement('div'); row.className = 'gcmd'; row.textContent = st.copy.mask; const cb = document.createElement('button'); cb.className = 'tiny box gcopy'; cb.textContent = st.copy.label;
+        cb.onclick = () => { send({ t: st.copy.action }); cb.textContent = 'COPIED'; }; box.append(row, cb); }
       if (st.hint) { const ht = document.createElement('div'); ht.className = 'ghint'; ht.textContent = st.hint; box.append(ht); }
       if (st.input) { const inp = document.createElement('input'); inp.className = 'gin'; inp.placeholder = st.input.placeholder || ''; inp.autocomplete = 'off'; inp.spellcheck = false;
         const sv = document.createElement('button'); sv.className = 'tiny box'; sv.textContent = st.input.label || 'SAVE';
@@ -402,6 +404,8 @@ function showPrefs() {
   const sp = $('#s-speed'); if (!sp) return;
   if (document.activeElement !== sp) sp.value = Math.round(PREFS.speed * 100); $('#s-speedl').textContent = fmtX(+sp.value / 100);
   const vl = $('#s-vol'); if (document.activeElement !== vl) vl.value = PREFS.volume; $('#s-voll').textContent = vl.value + '%';
+  $('#s-heard').textContent = 'SHOW WHAT I HEARD · ' + (PREFS.show_heard === false ? 'OFF' : 'ON'); $('#s-large').textContent = 'LARGE TEXT · ' + (PREFS.large_text ? 'ON' : 'OFF'); $('#s-hc').textContent = 'HIGH CONTRAST · ' + (PREFS.high_contrast ? 'ON' : 'OFF');
+  document.documentElement.classList.toggle('large', !!PREFS.large_text); document.documentElement.classList.toggle('hc', !!PREFS.high_contrast);
   $('#s-twake').textContent = 'TERMINAL WAKE · ' + (PREFS.term_wake ? 'ON' : 'OFF');
   $('#s-warn').textContent = 'MACHINE WARNINGS · ' + (PREFS.machine_warnings === false ? 'OFF' : 'ON');
   $('#s-auto').textContent = 'AUTO VISUALS · ' + (PREFS.auto_visuals ? 'ON' : 'OFF'); $('#s-stay').textContent = 'STAY OUT · ' + (PREFS.stay_out ? 'ON' : 'OFF');
@@ -417,6 +421,8 @@ const slider = (id, minus, plus, step, fmt, commit) => { const el = $(id); el.ad
 slider('#s-speed', '#s-spm', '#s-spp', 5, v => { $('#s-speedl').textContent = fmtX(v / 100); }, v => setPref('speed', v / 100));
 slider('#s-vol', '#s-vm', '#s-vp', 5, v => { $('#s-voll').textContent = v + '%'; }, v => setPref('volume', v));
 slider('#s-idle', '#s-idm', '#s-idp', 1, v => { $('#s-idlel').textContent = idleLabel(IDLE_CHOICES[v]); }, v => setPref('idle_minutes', IDLE_CHOICES[v]));
+$('#s-heard').onclick = () => setPref('show_heard', PREFS.show_heard === false); $('#s-large').onclick = () => setPref('large_text', !PREFS.large_text); $('#s-hc').onclick = () => setPref('high_contrast', !PREFS.high_contrast);
+$('#m-act').onclick = () => { openMenu(false); ask('what happened'); };
 $('#s-warn').onclick = () => setPref('machine_warnings', PREFS.machine_warnings === false);
 $('#s-auto').onclick = () => setPref('auto_visuals', !PREFS.auto_visuals); $('#s-stay').onclick = () => setPref('stay_out', !PREFS.stay_out);
 $('#s-c24').onclick = () => setPref('clock24', !PREFS.clock24); $('#s-csec').onclick = () => setPref('clock_seconds', !PREFS.clock_seconds);
@@ -432,6 +438,7 @@ const RESETS = { voice: () => { setPref('speed', 1.0); followup = false; send({ 
   screensaver: () => { setPref('idle_minutes', 5); setPref('clock24', false); setPref('clock_seconds', true); }, advanced: () => { setPref('stay_out', true); setPref('machine_warnings', true); } };
 document.querySelectorAll('#settings .sgreset').forEach(b => b.onclick = () => { (RESETS[b.dataset.reset] || (() => {}))(); b.textContent = 'RESET ✓'; setTimeout(() => { b.textContent = 'RESET THIS SECTION'; }, 1200); });
 const ask = text => send({ t: 'ask', text });                                       // a few fixed requests from buttons (the server only accepts an allowlist)
+$('#s-iphone').onclick = () => { closeSettings(); ask('set up the iphone voice'); };
 $('#s-mac').onclick = () => { closeSettings(); ask('pair my Mac'); }; $('#s-spot').onclick = () => { closeSettings(); ask('set up Spotify'); }; $('#s-clk').onclick = () => { closeSettings(); ask('show the clock now'); };
 $('#s-theme').onclick = () => setTheme(S.theme === 'jarvis' ? 'rose' : 'jarvis');
 $('#s-hf').onclick = () => $('#i-mute').click();
@@ -563,6 +570,29 @@ function filesMount(w) {
   up.onclick = () => parent && load(parent); home.onclick = () => load(''); hid.onclick = () => { showHidden = !showHidden; hid.textContent = 'HIDDEN: ' + (showHidden ? 'ON' : 'OFF'); load(cur); };
   load('');
 }
+
+function launchMount(w) {
+  const root = document.createElement('div'); root.className = 'files'; w.body.appendChild(root); const bar = document.createElement('div'); bar.className = 'fbar'; const inp = document.createElement('input'); inp.placeholder = 'type an app or a file name'; inp.className = 'gin'; inp.style.margin = '0'; bar.append(inp);
+  const grid = document.createElement('div'); grid.className = 'fgrid'; root.append(bar, grid); let seq = 0, tm = 0; setTimeout(() => inp.focus(), 80);
+  inp.addEventListener('pointerdown', e => e.stopPropagation()); inp.addEventListener('focusin', () => send({ t: 'term_focus', on: true })); inp.addEventListener('focusout', () => send({ t: 'term_focus', on: false }));
+  inp.oninput = () => { clearTimeout(tm); tm = setTimeout(async () => { const q = inp.value.trim(); if (q.length < 2) { grid.textContent = ''; return; } const mine = ++seq; const token = await termToken();
+    let l = []; try { l = await fetch('/api/launcher?q=' + encodeURIComponent(q), { headers: { 'X-Jarvis-Token': token } }).then(r => r.json()); } catch (_) {} if (mine !== seq) return; grid.textContent = '';
+    l.forEach(x => { const b = document.createElement('button'); b.className = 'fi'; const ic = document.createElement('div'); ic.className = 'ic'; ic.textContent = x.kind === 'app' ? '◈' : x.kind === 'dir' ? '▣' : '▤'; b.append(ic, document.createTextNode(x.name));
+      b.onclick = () => send({ t: 'action', name: 'launch_item', payload: { kind: x.kind, id: x.id, path: x.path, token } }); grid.append(b); }); if (!l.length) grid.textContent = 'nothing found'; }, 250); };
+}
+function scratchMount(w) {
+  const ta = document.createElement('textarea'); ta.className = 'gin'; ta.style.cssText = 'width:100%;height:100%;margin:0;resize:none;border:0;background:#02040c;font-size:14px;line-height:1.5'; ta.placeholder = 'scratchpad: kept on this machine, saved as you type'; w.body.appendChild(ta);
+  send({ t: 'scratch_get' }); w.onscratch = t => { if (document.activeElement !== ta) ta.value = t; }; let tm = 0; ta.addEventListener('pointerdown', e => e.stopPropagation()); ta.addEventListener('focusin', () => send({ t: 'term_focus', on: true })); ta.addEventListener('focusout', () => send({ t: 'term_focus', on: false }));
+  ta.oninput = () => { clearTimeout(tm); tm = setTimeout(() => send({ t: 'scratch_save', text: ta.value }), 500); }; w.onclose = () => send({ t: 'scratch_save', text: ta.value });
+}
+function clipMount(w) {
+  const root = document.createElement('div'); root.className = 'files'; w.body.appendChild(root); const grid = document.createElement('div'); grid.className = 'fgrid'; grid.style.gridTemplateColumns = '1fr'; root.append(grid);
+  w.onclips = items => { grid.textContent = ''; items.forEach(t => { const b = document.createElement('button'); b.className = 'fi'; b.style.alignItems = 'flex-start'; b.style.textAlign = 'left'; b.textContent = t.slice(0, 160); b.onclick = () => { try { navigator.clipboard.writeText(t); toast('COPIED'); } catch (_) {} }; grid.append(b); }); if (!items.length) grid.textContent = 'nothing copied yet (passwords and card numbers are never kept)'; };
+  send({ t: 'clip_get' }); w.cliptimer = setInterval(() => send({ t: 'clip_get' }), 4000); const oc = w.onclose; w.onclose = () => { clearInterval(w.cliptimer); };
+}
+function openTools(list) { (list || []).forEach(t => { const tool = typeof t === 'string' ? { launcher: { kind: 'launch' }, scratchpad: { kind: 'scratch' }, clipboard: { kind: 'clip' } }[t] || { kind: t } : t; const w = openWin({ kind: tool.kind, preset: tool.preset, src: '', title: '' }); if (w && t.rect) { place(w, snapRect({ x: t.rect.x * innerWidth, y: t.rect.y * innerHeight, w: t.rect.w * innerWidth, h: t.rect.h * innerHeight })); } }); }
+function saveLayout(name) { const wins = WM.wins.filter(w => ['term', 'claude', 'files', 'launch', 'scratch', 'clip'].includes(w.type)).map(w => ({ kind: w.type === 'claude' ? 'term' : w.type, preset: w.type === 'claude' ? 'claude' : undefined, rect: { x: w.rect.x / innerWidth, y: w.rect.y / innerHeight, w: w.rect.w / innerWidth, h: w.rect.h / innerHeight } })); send({ t: 'layout_save', name, wins }); }
+$('#m-launch').onclick = () => { openMenu(false); openTools(['launcher']); }; $('#m-scratch').onclick = () => { openMenu(false); openTools(['scratchpad']); }; $('#m-clip').onclick = () => { openMenu(false); openTools(['clipboard']); };
 const openTool = (kind, preset) => openWin({ kind, preset, src: '', title: '' });
 $('#m-term').onclick = () => { openMenu(false); openTool('term'); }; $('#m-claude').onclick = () => { openMenu(false); openTool('term', 'claude'); }; $('#m-files').onclick = () => { openMenu(false); openTool('files'); };
 $('#abort').onclick = () => send({ t: 'action', name: 'abort_desktop', payload: {} });
@@ -574,7 +604,7 @@ function addCard(card) {
   while (cards.length >= SLOTS.length) closeCard(cards[0]);
   const el = document.createElement('div'); el.className = 'card';
   const bar = document.createElement('div'); bar.className = 'bar';
-  bar.innerHTML = '<b></b><span class="pg"><button class="pp" aria-label="previous">‹</button><i></i><button class="pn" aria-label="next">›</button></span><button class="ex" aria-label="full screen">⤢</button><button class="x" aria-label="close">✕</button>'; bar.firstChild.textContent = (card.title || card.type);
+  bar.innerHTML = '<span class="tl"><button class="x tlr" aria-label="close">✕</button><button class="mn tly" aria-label="minimise">–</button><button class="ex tlg" aria-label="full screen">⤢</button></span><b></b><span class="pg"><button class="pp" aria-label="previous">‹</button><i></i><button class="pn" aria-label="next">›</button></span>'; bar.querySelector('b').textContent = (card.title || card.type);
   const body = document.createElement('div'); body.className = 'body';
   const meta = document.createElement('div'); meta.className = 'meta'; meta.innerHTML = '<span></span><span></span>';
   meta.firstChild.textContent = card.type.toUpperCase() + ' // JARVIS'; meta.lastChild.textContent = 'ID ' + String(++cardId).padStart(3, '0');
@@ -625,7 +655,8 @@ function addCard(card) {
   placeCard(el, cards.length - 1);
   requestAnimationFrame(() => { el.classList.add('in'); post && post(); c.map && c.map.invalidateSize(); });
   bar.querySelector('.x').onclick = () => closeCard(c);                                     // CLOSE always closes, in one press (it used to shrink a full-screen card to a small panel first)
-  bar.querySelector('.ex').onclick = () => c.isFull ? collapseCard(c) : expandCard(c);      // maximise / minimise is its own button with its own icon
+  bar.querySelector('.ex').onclick = () => c.isFull ? collapseCard(c) : expandCard(c);
+  bar.querySelector('.mn').onclick = () => { if (c.isFull) collapseCard(c); else el.classList.toggle('shaded'); };                  // yellow: back to small, or roll the card up to its title bar      // maximise / minimise is its own button with its own icon
   bar.querySelector('.pp').onclick = () => flip(c, -1); bar.querySelector('.pn').onclick = () => flip(c, 1);
   const now = performance.now(); if (now - lastCardT > 2500) batch = []; lastCardT = now; batch.push(c);   // cards of one reply form a batch you can page through
   if (S.ghost) setGhost(false);
@@ -759,7 +790,7 @@ const FRAME = { x: .06, y: .12, w: .88, h: .74 };                               
 const GAP = 12, CRACK = 190, ORBZ = 170, MINI = { w: 224, h: 126 };
 const lsGet = k => { try { return JSON.parse(localStorage.getItem(k)); } catch (_) { return null; } }, lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} };
 const frameRect = () => ({ x: FRAME.x * innerWidth, y: FRAME.y * innerHeight, w: FRAME.w * innerWidth, h: FRAME.h * innerHeight });
-const winType = m => m.kind === 'term' ? (m.preset === 'claude' ? 'claude' : 'term') : m.kind === 'files' ? 'files' : /youtube\.com\/embed/.test(m.src) ? 'video' : /^\/map/.test(m.src) ? 'map' : m.kind === 'image' ? 'image' : 'page';
+const winType = m => m.kind === 'launch' ? 'launch' : m.kind === 'scratch' ? 'scratch' : m.kind === 'clip' ? 'clip' : m.kind === 'term' ? (m.preset === 'claude' ? 'claude' : 'term') : m.kind === 'files' ? 'files' : /youtube\.com\/embed/.test(m.src) ? 'video' : /^\/map/.test(m.src) ? 'map' : m.kind === 'image' ? 'image' : 'page';
 function snapRect(r) {                                                              // settle a dropped window: on screen, snapped to edges, out of the cracked corner and the orb
   const W_ = innerWidth, H_ = innerHeight; r.w = Math.min(r.w, W_ - 2 * GAP); r.h = Math.min(r.h, H_ - 2 * GAP);
   r.x = Math.min(Math.max(r.x, GAP), W_ - r.w - GAP); r.y = Math.min(Math.max(r.y, GAP), H_ - r.h - GAP);
@@ -801,17 +832,20 @@ function openWin(m) {
   const type = winType(m), html = document.documentElement; let w = WM.wins.find(o => o.type === type);
   if (w) { const old = w.body.firstChild; if (old && old.src !== undefined) { old.src = m.src; } if (w.state === 'mini') setState(w, 'normal'); toFront(w); html.classList.add('embed'); return w; }   // same type: reuse the window
   const el = document.createElement('div'); el.className = 'win';
-  el.innerHTML = '<div class="wt"><span class="wtt"></span><button class="wb wmin" aria-label="minimise">&#8211;</button><button class="wb wmax" aria-label="maximise">&#9633;</button><button class="wb wx" aria-label="close">&#10005;</button></div>' +
+  el.innerHTML = '<div class="wt"><span class="tl"><button class="wb wx tlr" aria-label="close">&#10005;</button><button class="wb wmin tly" aria-label="minimise">&#8211;</button><button class="wb wmax tlg" aria-label="full screen">&#10530;</button></span><span class="wtt"></span></div>' +
     '<div class="wbody"></div><div class="wr wre"></div><div class="wr wrb"></div><div class="wr wrc"></div><div class="wtile"><button class="wb wpp" aria-label="play or pause">&#10074;&#10074;</button><button class="wb wex" aria-label="expand">&#10530;</button></div>';
   w = { type, el, body: el.querySelector('.wbody'), state: 'normal', rect: null, paused: false, saved: null }; w.titleEl = el.querySelector('.wtt');
   if (m.kind === 'iframe') { const f = document.createElement('iframe'); f.src = m.src; f.allow = 'autoplay; encrypted-media; picture-in-picture'; f.referrerPolicy = 'origin'; w.body.appendChild(f); }   // no 'fullscreen' permission: the only full screen is ours
   else if (m.kind === 'term') termMount(w, m);
   else if (m.kind === 'files') filesMount(w);
+  else if (m.kind === 'launch') launchMount(w);
+  else if (m.kind === 'scratch') scratchMount(w);
+  else if (m.kind === 'clip') clipMount(w);
   else { const i = new Image(); i.src = m.src; i.referrerPolicy = 'no-referrer'; w.body.appendChild(i); }
-  w.titleEl.textContent = ({ video: 'VIDEO', map: 'MAP', image: 'IMAGE', page: 'PAGE', term: 'TERMINAL', claude: 'CLAUDE', files: 'FILES' })[type] + (m.title ? ' · ' + String(m.title).slice(0, 36).toUpperCase() : '');
+  w.titleEl.textContent = ({ video: 'VIDEO', map: 'MAP', image: 'IMAGE', page: 'PAGE', term: 'TERMINAL', claude: 'CLAUDE', files: 'FILES', launch: 'LAUNCHER', scratch: 'SCRATCHPAD', clip: 'CLIPBOARD' })[type] + (m.title ? ' · ' + String(m.title).slice(0, 36).toUpperCase() : '');
   $('#panel').appendChild(el); WM.wins.push(w); place(w, startRect(type));
   el.addEventListener('pointerdown', () => toFront(w), true);
-  el.querySelector('.wt').addEventListener('pointerdown', e => { if (!e.target.closest('.wb')) drag(w, e, 'move'); });
+  el.querySelector('.wt').addEventListener('pointerdown', e => { if (!e.target.closest('.wb')) drag(w, e, 'move'); }); el.querySelector('.wt').addEventListener('dblclick', e => { if (!e.target.closest('.wb')) setState(w, 'max'); });
   el.querySelector('.wrc').addEventListener('pointerdown', e => drag(w, e, 'se')); el.querySelector('.wre').addEventListener('pointerdown', e => drag(w, e, 'e')); el.querySelector('.wrb').addEventListener('pointerdown', e => drag(w, e, 's'));
   el.querySelector('.wmin').onclick = () => setState(w, 'mini'); el.querySelector('.wmax').onclick = () => setState(w, 'max'); el.querySelector('.wx').onclick = () => { closeWin(w); send({ t: 'action', name: 'embed_closed', payload: {} }); };
   el.querySelector('.wex').onclick = () => setState(w, 'normal');
@@ -894,7 +928,11 @@ function connect() {
   ws.onopen = () => { if (!DOCK) send({ t: 'persona', v: S.theme, announce: false }); if (!DOCK) send({ t: 'source', v: S.source }); if (S.silent && !DOCK) send({ t: 'silent', on: true }); };
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
-    if (m.t === 'termtoken') { TERM.token = m.token; TERM.claudeDir = m.claude_dir || ''; TERM.waiters.splice(0).forEach(f => f(m.token)); }
+    if (m.t === 'heard') { if (PREFS.show_heard !== false) { const e = $('#heard'); e.textContent = 'heard: ' + m.text + (m.route ? '   →   ' + m.route : ''); e.style.display = 'block'; clearTimeout(e._t); e._t = setTimeout(() => { e.style.display = 'none'; }, 9000); } }
+    else if (m.t === 'offline') { const e = $('#offl'); e.textContent = m.msg || ''; e.style.display = m.msg ? 'block' : 'none'; }
+    else if (m.t === 'clip') { try { navigator.clipboard.writeText(m.text); toast('COPIED'); } catch (_) { toast('COPY FAILED'); } }
+    else if (m.t === 'phonereq') { const e = $('#preq'); e.textContent = 'PHONE: ' + m.text + '  →  ' + m.reply; e.style.display = 'block'; clearTimeout(e._t); e._t = setTimeout(() => { e.style.display = 'none'; }, 14000); }
+    else if (m.t === 'termtoken') { TERM.token = m.token; TERM.claudeDir = m.claude_dir || ''; TERM.waiters.splice(0).forEach(f => f(m.token)); }
     else if (m.t === 'look') lkEvent(m);
     else if (m.t === 'prefs') { Object.assign(PREFS, m); showPrefs(); }
     else if (m.t === 'hello') { if (m.prefs) { Object.assign(PREFS, m.prefs); showPrefs(); } if (m.persona && m.persona !== S.theme) setTheme(m.persona, false); followup = m.followup !== false; showFollow(); muted = !!m.muted; handsfree = !!m.handsfree; setMode(m.state); showMute(); $('#hist').textContent = ''; (m.history || []).forEach(h => addMsg(h.role, h.text)); }
@@ -956,7 +994,7 @@ async function selftest() {
     if (!expectCentre && (Math.abs(c.s - .4) > .03 || c.word[0] < W * .7)) bad.push(tag); };
   const IDS = ['#menubtn', '#dock', '#status', '#cap', '#i-chat', '#i-cam', '#i-map', '#i-music', '#i-mute', '#orbhit'];
   const sig = () => IDS.map(i => { const e = $(i), r = e.getBoundingClientRect(), vis = getComputedStyle(e).display !== 'none'; return [i, vis, Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; });
-  const MENU = ['#menu', '#m-hide', '#m-theme', '#m-win', '#m-term', '#m-claude', '#m-files', '#m-hist', '#m-clear', '#m-src', '#m-set'], SETT = ['#settings', '#s-voice', '#s-speed', '#s-follow', '#s-snd'];
+  const MENU = ['#menu', '#m-hide', '#m-theme', '#m-win', '#m-term', '#m-claude', '#m-files', '#m-launch', '#m-scratch', '#m-clip', '#m-act', '#m-hist', '#m-clear', '#m-src', '#m-set'], SETT = ['#settings', '#s-voice', '#s-speed', '#s-follow', '#s-snd'];
   setTheme('jarvis', false); setMode('idle'); openMenu(true); $('#settings').classList.add('on'); await frames(5);
   const sigM = () => [...IDS, ...MENU, ...SETT].map(i => { const e = $(i), r = e.getBoundingClientRect(), vis = getComputedStyle(e).display !== 'none'; return [i, vis, Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; });
   const a = sigM(); const cornerD = el => { const r = el.getBoundingClientRect(), pts = [[0, 0], [W, 0], [0, H], [W, H]];

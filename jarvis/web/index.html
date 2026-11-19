@@ -34,6 +34,10 @@
   <button id="m-term" class="tiny box">TERMINAL</button>
   <button id="m-claude" class="tiny box">CLAUDE</button>
   <button id="m-files" class="tiny box">FILES</button>
+  <button id="m-launch" class="tiny box">LAUNCHER</button>
+  <button id="m-scratch" class="tiny box">SCRATCHPAD</button>
+  <button id="m-clip" class="tiny box">CLIPBOARD</button>
+  <button id="m-act" class="tiny box">ACTIVITY</button>
   <button id="m-hist" class="tiny box">HISTORY</button>
   <button id="m-clear" class="tiny box">CLEAR VIEW</button>
   <button id="m-src" class="tiny box">CAMERA SOURCE</button>
@@ -54,6 +58,9 @@
       <button class="box sgreset" data-reset="voice">RESET THIS SECTION</button></div></section>
     <section class="sg" data-sg="display"><h3 class="sgh">DISPLAY</h3><div class="sgb">
       <div class="srow"><div class="sl"><b>Auto visuals</b><small>Show pictures and videos by themselves when the answer is about something.</small></div><button id="s-auto" class="box">AUTO VISUALS · ON</button></div>
+      <div class="srow"><div class="sl"><b>Show what I heard</b><small>A small line with your words and which part answered, so a wrong guess is easy to spot.</small></div><button id="s-heard" class="box">SHOW WHAT I HEARD · ON</button></div>
+      <div class="srow"><div class="sl"><b>Large text</b><small>Bigger text and buttons everywhere.</small></div><button id="s-large" class="box">LARGE TEXT · OFF</button></div>
+      <div class="srow"><div class="sl"><b>High contrast</b><small>Brighter lines and text for easier reading.</small></div><button id="s-hc" class="box">HIGH CONTRAST · OFF</button></div>
       <div class="srow"><div class="sl"><b>Lite mode</b><small>Fewer effects, lighter on the processor.</small></div><button id="s-lite" class="box">LITE MODE · OFF</button></div>
       <div class="srow"><div class="sl"><b>Theme</b><small>Switch between Jarvis (blue) and Rose (red).</small></div><button id="s-theme" class="box">SWITCH THEME</button></div>
       <div class="srow"><div class="sl"><b>Theme shortcut</b><small>Press this to switch theme. It never fires while you type.</small></div><button id="s-tkey" class="box">ALT+T · CHANGE</button></div>
@@ -67,6 +74,7 @@
       <div class="srow"><div class="sl"><b>What "look" uses</b><small>Auto, screen, window, a USB webcam or your phone.</small></div><button id="s-src" class="box">CAMERA SOURCE</button></div>
       <div class="srow"><div class="sl"><b>Phone camera</b><small>Use IP Webcam or DroidCam on your phone over Wi-Fi.</small></div><button id="s-pcam" class="box">PHONE CAMERA</button></div></div></section>
     <section class="sg" data-sg="mac"><h3 class="sgh">MAC AND PHONE</h3><div class="sgb">
+      <div class="srow"><div class="sl"><b>Hey Jarvis from my iPhone</b><small>A Shortcut records 10 seconds and Jarvis answers on the phone. Home Wi-Fi only; off until you turn it on.</small></div><button id="s-iphone" class="box">IPHONE VOICE</button></div>
       <div class="srow"><div class="sl"><b>Pair my Mac</b><small>Send links and files to your Mac. Shows the steps and a code.</small></div><button id="s-mac" class="box">PAIR MY MAC</button></div></div></section>
     <section class="sg" data-sg="music"><h3 class="sgh">MUSIC</h3><div class="sgb">
       <div class="srow"><div class="sl"><b>Spotify</b><small>Step-by-step setup (needs Premium).</small></div><button id="s-spot" class="box">SET UP SPOTIFY</button></div></div></section>
@@ -129,6 +137,8 @@
   </div>
 </div></div>
 <div id="hstat"></div>
+<div id="heard"></div><div id="offl"></div>
+<div id="preq"></div>
 <div id="toast"></div>
 <script src="/static/vendor/leaflet.js"></script>
 <script src="/static/vendor/xterm.js"></script>

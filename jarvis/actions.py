@@ -8,6 +8,8 @@ card["actions"] = [{"label": "SEND TO PHONE", "action": "send_to_phone", "payloa
 
 Planned (not built): "send_to_phone" (locations, links) and "call_me"; they only need to be registered here."""
 
+import os
+
 REGISTRY = {}
 
 
@@ -364,3 +366,210 @@ def _place_other(payload, assistant):
 def _release_other(payload, assistant):
     from . import opener
     return {"message": opener.release_other(str(payload.get("address", "")))["message"]}
+
+
+def _meta(kind):
+    import threading
+    return lambda payload, assistant: (threading.Thread(target=assistant.run_meta, args=(kind,), daemon=True).start(), {"message": kind})[1]
+
+
+for _k in ("update_now:update", "improve_apply:improve_apply", "improve_discard:improve_discard", "publish_push:publish_push"):
+    _name, _kind = _k.split(":")
+    if _name != "publish_push":
+        REGISTRY[_name] = _meta(_kind)
+
+
+@action("publish_push")
+def _publish_push(payload, assistant):
+    """The PUSH TO GITHUB button on the prepared public update (a deliberate press; the scan runs again first)."""
+    import threading
+    from . import publish
+
+    def go():
+        ok, msg = publish.push("Update from the working copy")
+        assistant._meta_card("Public update", [msg])
+    threading.Thread(target=go, daemon=True).start()
+    return {"message": "pushing"}
+
+
+def _voice_card(assistant):
+    from . import voiceapi
+    if assistant.on_card:
+        assistant.on_card(voiceapi.guide_card(voiceapi.is_on()))
+
+
+@action("voice_toggle")
+def _voice_toggle(payload, assistant):
+    """The TURN ON / TURN OFF button of the iPhone voice card (off by default)."""
+    import threading
+    from . import voiceapi
+
+    def go():
+        ok, msg = assistant.voice_set(not voiceapi.is_on())
+        from . import opener
+        opener.NOTIFY({"t": "guide", "gid": "voice", "state": "connected" if ok else "error", "status": ("ON: listening on your home network" if voiceapi.is_on() else "OFF") if ok else msg})
+    threading.Thread(target=go, daemon=True).start()
+    return {"message": "toggling"}
+
+
+@action("voice_regen")
+def _voice_regen(payload, assistant):
+    from . import opener, voiceapi
+    voiceapi.regenerate()
+    opener.NOTIFY({"t": "guide", "gid": "voice", "state": "ok", "status": "New secret made. The old address no longer works: copy the new one into your Shortcut."})
+    return {"message": "regenerated"}
+
+
+@action("voice_test")
+def _voice_test(payload, assistant):
+    """TEST: send a short spoken sample from this machine to its own endpoint and show what came back (the address is never shown)."""
+    import threading
+    from . import opener, tts, voiceapi
+
+    def go():
+        import tempfile
+        import urllib.request
+        if not voiceapi.is_on():
+            opener.NOTIFY({"t": "guide", "gid": "voice", "state": "error", "status": "Turn it on first."})
+            return
+        wav = tempfile.mktemp(suffix=".wav")
+        try:
+            tts.synth("What is two plus two", wav)
+            req = urllib.request.Request(voiceapi.url(), data=open(wav, "rb").read(), headers={"Content-Type": "audio/wav"}, method="POST")
+            with urllib.request.urlopen(req, timeout=60) as r:
+                body = r.read().decode("utf-8", "ignore")[:160]
+            opener.NOTIFY({"t": "guide", "gid": "voice", "state": "connected", "status": "Works. I sent a spoken sample and got back: " + body})
+        except Exception as e:
+            opener.NOTIFY({"t": "guide", "gid": "voice", "state": "error", "status": "The endpoint did not answer (" + type(e).__name__ + "). If a firewall is on, port 8766 may be blocked; I did not change it."})
+        finally:
+            try:
+                os.unlink(wav)
+            except OSError:
+                pass
+    threading.Thread(target=go, daemon=True).start()
+    return {"message": "testing"}
+
+
+@action("outbox_resend")
+def _outbox_resend(payload, assistant):
+    import threading
+    threading.Thread(target=assistant.resend_failed, daemon=True).start()
+    return {"message": "resending"}
+
+
+@action("mic_test")
+def _mic_test(payload, assistant):
+    import threading
+    threading.Thread(target=assistant.mic_test, daemon=True).start()
+    return {"message": "testing"}
+
+
+@action("mic_fix")
+def _mic_fix(payload, assistant):
+    import threading
+    from . import micheck
+    threading.Thread(target=lambda: assistant.say(micheck.fix()), daemon=True).start()
+    return {"message": "fixing"}
+
+
+@action("tour_loc")
+def _tour_loc(payload, assistant):
+    from . import maps
+    assistant.on_card(maps.location_card(False))
+    return {"message": "location"}
+
+
+@action("tour_look")
+def _tour_look(payload, assistant):
+    assistant.ask_text("look at this")
+    return {"message": "look"}
+
+
+@action("tour_done")
+def _tour_done(payload, assistant):
+    from . import settings
+    settings.update(onboarded=True)
+    return {"message": "done"}
+
+
+def _cm(gid, ok, msg):
+    from . import opener
+    opener.NOTIFY({"t": "guide", "gid": gid, "state": "connected" if ok else "error", "status": msg})
+
+
+@action("cal_save")
+def _cal_save(payload, assistant):
+    from . import calmail
+    ok, msg = calmail.save_calendar(str(payload.get("value", "")))
+    _cm("cal", ok, msg)
+    return {"message": "saved" if ok else "rejected"}
+
+
+@action("mail_user")
+def _mail_user(payload, assistant):
+    from . import calmail
+    ok, msg = calmail.save_mail(user=str(payload.get("value", "")))
+    _cm("mail", ok, msg)
+    return {"message": "saved" if ok else "rejected"}
+
+
+@action("mail_pass")
+def _mail_pass(payload, assistant):
+    from . import calmail
+    ok, msg = calmail.save_mail(password=str(payload.get("value", "")))
+    _cm("mail", ok, msg)
+    return {"message": "saved" if ok else "rejected"}
+
+
+@action("read_to_mac")
+def _read_to_mac(payload, assistant):
+    import threading
+    from . import outbox
+    t = getattr(assistant, "_last_read", "")
+    if t:
+        threading.Thread(target=assistant.run_mac, args=({"file": outbox.text_to_note_file(t, "text")},), daemon=True).start()
+    return {"message": "sending"}
+
+
+@action("read_to_phone")
+def _read_to_phone(payload, assistant):
+    import threading
+    t = getattr(assistant, "_last_read", "")
+    if t:
+        threading.Thread(target=assistant.run_phone, args=({"title": "Text from Jarvis", "message": t[:900]},), daemon=True).start()
+    return {"message": "sending"}
+
+
+@action("read_to_list")
+def _read_to_list(payload, assistant):
+    from . import extras
+    n = 0
+    for ln in getattr(assistant, "_last_read", "").splitlines()[:20]:
+        if 3 <= len(ln.strip()) <= 80:
+            extras.list_add(ln.strip())
+            n += 1
+    assistant.say(f"Added {n} lines to your list.")
+    return {"message": f"{n} added"}
+
+
+@action("launch_item")
+def _launch_item(payload, assistant):
+    """LAUNCHER: open an app (by its desktop id, which must exist) or a file/folder inside your home folder. Token required."""
+    import threading
+    from . import opener, terminal
+    if not terminal.token_ok(str(payload.get("token", ""))):
+        return {"message": "refused"}
+    if payload.get("kind") == "app":
+        hit = {v for v in opener.desktop_apps().values()}
+        did = str(payload.get("id", ""))
+        if did in hit:
+            threading.Thread(target=lambda: opener.execute({"action": "open_desktop", "id": did, "label": did}), daemon=True).start()
+            return {"message": "launching"}
+        return {"message": "unknown app"}
+    threading.Thread(target=opener.open_path, args=(str(payload.get("path", "")),), daemon=True).start()
+    return {"message": "opening"}
+
+
+@action("clip_copy")
+def _clip_copy(payload, assistant):
+    return {"message": "ok"}

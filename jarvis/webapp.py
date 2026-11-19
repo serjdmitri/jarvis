@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 from aiohttp import WSMsgType, web
 
-from . import dictate, maps, mac, opener, phone, phonecam, prefs, terminal, actions, config, settings, skills, tts
+from . import audio, companion, desk, lookmem, dictate, maps, mac, opener, phone, phonecam, prefs, terminal, voiceapi, actions, config, settings, skills, tts
 from .core import Assistant
 
 PORT = int(os.environ.get("JARVIS_PORT", "8765"))
@@ -134,6 +134,18 @@ class Server:
             raise web.HTTPForbidden()
         return web.FileResponse(WEB / "index.html", headers={"Cache-Control": "no-store"})
 
+    def on_phone_request(self, text, reply):
+        self.bcast({"t": "phonereq", "text": text[:140], "reply": reply[:160]})
+
+    def voice_set(self, on):
+        """Turn the iPhone endpoint on or off (called from the settings card's button, from a worker thread). -> (ok, message)."""
+        fut = asyncio.run_coroutine_threadsafe(voiceapi.start(self.assistant, self.on_phone_request) if on else voiceapi.stop(), self.loop)
+        res = fut.result(15)
+        ok, msg = res if on else (True, "off")
+        if ok:
+            settings.update(phone_voice=bool(on))
+        return ok, msg
+
     async def term_ws(self, req):
         """The terminal socket: right Host, right Origin, and the first message must carry the session token; anything else is closed. Nothing is started before that."""
         if not self._origin_ok(req) or req.headers.get("Origin") is None:
@@ -154,6 +166,11 @@ class Server:
     def _token_ok(self, req):
         return self._origin_ok(req) and terminal.token_ok(req.headers.get("X-Jarvis-Token", ""))
 
+    async def launcher_api(self, req):
+        if not self._token_ok(req):
+            raise web.HTTPForbidden()
+        return web.json_response(await asyncio.get_running_loop().run_in_executor(None, desk.launcher_search, req.query.get("q", "")))
+
     async def files_api(self, req):
         if not self._token_ok(req):
             raise web.HTTPForbidden()
@@ -169,6 +186,14 @@ class Server:
         if not b:
             raise web.HTTPNotFound()
         return web.Response(body=b, content_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    async def lookmem_file(self, req):
+        """A picture saved by "remember this" (data/look/look-<ms>.jpg), shown again by "where did I put ...?"."""
+        name = req.match_info["name"]
+        f = lookmem.DIR / name
+        if not self._origin_ok(req) or not re.fullmatch(r"look-\d+\.jpg", name) or not f.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(f, headers={"Cache-Control": "no-store"})
 
     async def look_frame_api(self, request):
         """LIVE polling for a source without a stream address (USB webcam / screen): one fresh picture per request, only while the LOOK view is open."""
@@ -207,6 +232,9 @@ class Server:
                 self._idle_w = None
         pend = sorted([p for p in extras.PENDING if p["due"] > now], key=lambda p: p["due"])
         nxt = {"label": pend[0]["label"] or "timer", "in_s": int(pend[0]["due"] - now), "at": time.strftime("%-I:%M %p", time.localtime(pend[0]["due"]))} if pend else None
+        if not nxt:                                                         # no reminder: the next calendar event, if a calendar is connected
+            from . import calmail
+            nxt = await asyncio.get_running_loop().run_in_executor(None, calmail.next_label)
         return web.json_response({"weather": getattr(self, "_idle_w", None), "next": nxt})
 
     async def map_page(self, req):
@@ -308,6 +336,15 @@ class Server:
             async for m in ws:
                 if m.type == WSMsgType.TEXT:
                     msg = json.loads(m.data)
+                    if msg.get("t") == "scratch_get":
+                        await ws.send_str(json.dumps({"t": "scratch", "text": desk.scratch_get()}))
+                        continue
+                    if msg.get("t") == "clip_get":
+                        await ws.send_str(json.dumps({"t": "clips", "items": list(desk.CLIP)[:20]}))
+                        continue
+                    if msg.get("t") == "voice_copy":                         # the full address (it contains the secret) goes to the page that asked, to put on the clipboard, and nowhere else
+                        await ws.send_str(json.dumps({"t": "clip", "text": voiceapi.url()}))
+                        continue
                     if msg.get("t") == "term_open":                      # the token goes to the page that asked, over this socket, and nowhere else
                         await ws.send_str(json.dumps({"t": "termtoken", "token": terminal.TOKEN, "claude_dir": settings.get("claude_dir") or ""}))
                         continue
@@ -345,8 +382,13 @@ class Server:
                 except (ValueError, TypeError):
                     pass
             threading.Thread(target=go, daemon=True).start()
-        elif t == "ask" and m.get("text") in ("pair my Mac", "set up Spotify", "show the clock now"):      # fixed requests from the settings buttons
+        elif t == "ask" and m.get("text") in ("pair my Mac", "set up Spotify", "show the clock now", "set up the iphone voice", "what happened", "take the tour"):      # fixed requests from the settings buttons
             a.ask_text(m["text"])
+        elif t == "scratch_save":
+            desk.scratch_put(str(m.get("text", "")))
+        elif t == "layout_save":
+            n = desk.save_layout(str(m.get("name", "layout")), [w for w in (m.get("wins") or []) if isinstance(w, dict)])
+            a.say(f"Saved the {m.get('name', 'layout')} layout with {n} window{'s' if n != 1 else ''}.")
         elif t == "term_focus":
             a.term_focus(bool(m.get("on")))
         elif t == "claude_dir":
@@ -445,6 +487,28 @@ class Server:
                     self.bcast({"t": "health", "msg": ""})
             except Exception as e:
                 print("[health] check failed:", type(e).__name__, flush=True)
+
+    async def watch_loop(self):
+        """Small background checks: offline chip, microphone clipping, a daily look for updates (only if this copy has an update source)."""
+        from . import net, updater
+        last_update, was_off = 0.0, False
+        while True:
+            await asyncio.sleep(20)
+            try:
+                off = not await asyncio.get_running_loop().run_in_executor(None, net.online)
+                if off != was_off:
+                    was_off = off
+                    self.bcast({"t": "offline", "msg": "OFFLINE: timers, notes, lists, the clock and volume still work" if off else ""})
+                if int(time.time()) % 600 < 20:
+                    self.assistant.mic_watch()
+                    audio.cleanup_stale()
+                if time.time() - last_update > 86400 and updater.source()[0] and prefs.get("update_check"):
+                    last_update = time.time()
+                    c = await asyncio.get_running_loop().run_in_executor(None, updater.check)
+                    if c.get("behind"):
+                        self.bcast({"t": "health", "msg": f"Update available ({c['behind']}): say 'update yourself'"})
+            except Exception as e:
+                print("[watch] failed:", type(e).__name__, flush=True)
 
     async def thermal_loop(self):
         """Lite mode turns on by itself when the CPU is hot (>= 78 C) and off again when it has cooled (<= 68 C). Sent to the pages as {"t": "lite"}."""
@@ -573,8 +637,10 @@ class Server:
         app.router.add_get("/api/windows", self.windows_api)
         app.router.add_get("/api/geosuggest", self.geosuggest_api)
         app.router.add_get("/api/look/frame", self.look_frame_api)
+        app.router.add_get("/lookmem/{name}", self.lookmem_file)
         app.router.add_get("/term/ws", self.term_ws)
         app.router.add_get("/api/files", self.files_api)
+        app.router.add_get("/api/launcher", self.launcher_api)
         app.router.add_get("/api/files/thumb", self.files_thumb)
         app.router.add_get("/map", self.map_page)
         app.router.add_get("/api/map/{id}", self.map_api)
@@ -597,6 +663,7 @@ class Server:
         self.assistant.preload()
         asyncio.ensure_future(self.thermal_loop())
         asyncio.ensure_future(self.health_loop())
+        asyncio.ensure_future(self.watch_loop())
         asyncio.ensure_future(self.briefing_loop())
         asyncio.ensure_future(self.quiet_loop())
         if os.environ.get("JARVIS_NO_DESKTOP") != "1":       # desktop side effects: the dock orb and a parked warm browser (tests set JARVIS_NO_DESKTOP=1)
@@ -611,6 +678,13 @@ class Server:
                 print("[idle] system screensaver held off while Jarvis runs", flush=True)
             atexit.register(syshold.release)
             signal.signal(signal.SIGTERM, lambda *a: (syshold.release(), os._exit(0)))
+        self.assistant.voice_set = self.voice_set
+        desk.start_clip_watch()
+        if mac.paired():
+            companion.start(self.assistant)                                # the Mac can ask and hand over notes, links and the clipboard
+        if prefs.get("phone_voice"):                                   # only if you switched it on in settings
+            ok, msg = await voiceapi.start(self.assistant, self.on_phone_request)
+            print("[phone voice]", "on" if ok else "could not start", flush=True)
         print(f"jarvis ui on http://127.0.0.1:{PORT}", flush=True)
         await self.mic_loop()
 

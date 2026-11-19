@@ -6,6 +6,7 @@
 * The brain can only *ask* (a structured {"phone": {title, message, link?, map?, image?}} block). This module validates and
   builds the request; the assistant only runs it when the user's own words asked for a send.
 * Nothing is sent without being asked. There is no automatic test send: `bin/jarvis-phone test` is run by the user."""
+from pathlib import Path
 import base64
 import os
 import re
@@ -95,6 +96,28 @@ def send(p):
         with urllib.request.urlopen(req, timeout=10) as r:
             ok = 200 <= r.status < 300
     except Exception as e:                              # never include str(e): urllib messages can carry the URL
+        return {"ok": False, "message": "could not reach ntfy (" + type(e).__name__ + ")"}
+    _last = time.time()
+    return {"ok": ok, "message": "sent" if ok else "ntfy refused it"}
+
+
+def send_file(path, title="From Jarvis", message="", click=None):
+    """A picture or document to the phone as an ntfy attachment (up to the service's 15 MB limit). Same privacy rules as send(). -> {"ok", "message"}."""
+    global _last
+    p = Path(path)
+    if not p.is_file() or p.stat().st_size > 14_000_000 or p.suffix.lower() not in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf", ".txt", ".md"):
+        return {"ok": False, "message": "that file cannot be sent to the phone"}
+    if time.time() - _last < 4:
+        return {"ok": False, "message": "too many sends; wait a few seconds"}
+    headers = {"Title": _hdr(title[:80]), "Filename": p.name, "User-Agent": "jarvis-local", "Tags": "jarvis"}
+    if message:
+        headers["Message"] = _hdr(message[:300])
+    if click:
+        headers["Click"] = click
+    try:
+        with urllib.request.urlopen(urllib.request.Request(f"{SERVER}/{get_topic()}", data=p.read_bytes(), headers=headers, method="PUT"), timeout=60) as r:
+            ok = 200 <= r.status < 300
+    except Exception as e:
         return {"ok": False, "message": "could not reach ntfy (" + type(e).__name__ + ")"}
     _last = time.time()
     return {"ok": ok, "message": "sent" if ok else "ntfy refused it"}

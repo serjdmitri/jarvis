@@ -155,6 +155,20 @@ def watch(notify, minutes=10):
         STATE["watching"] = False
 
 
+def post_main(payload):
+    """A signed message from the Go to the Mac on the main topic (replies to an ask). Never prints the topic."""
+    keys = _load()
+    if not keys:
+        return False
+    topic, key = keys
+    try:
+        urllib.request.urlopen(urllib.request.Request(f"{SERVER}/{topic}", data=jp.sign(key, payload).encode(), method="POST", headers={"User-Agent": "jarvis-local", "Tags": "jarvis"}), timeout=10).read()
+        return True
+    except Exception as e:
+        print("[mac] reply failed:", type(e).__name__, flush=True)
+        return False
+
+
 def send_test():
     """A harmless link to open on the Mac. -> bool sent (delivery is reported by the watcher when the Mac acknowledges)."""
     return send({"url": "https://www.wikipedia.org/", "label": "test link"})
