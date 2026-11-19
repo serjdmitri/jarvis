@@ -1,0 +1,18 @@
+# environments, models and caches
+.venv/
+__pycache__/
+*.pyc
+models/
+run/
+shots/
+logs/
+# anything personal Jarvis writes while it runs
+data/
+notes/
+*.wav
+.env
+*.key
+*.pem
+# editor and OS noise
+.DS_Store
+*.swp

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Checks the setup and tells you what is missing. Never prints settings, tokens or your location.
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
+PY=.venv/bin/python; [ -x "$PY" ] || PY=python3
+exec "$PY" -m jarvis.doctor "$@"

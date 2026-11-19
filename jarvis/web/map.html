@@ -1,0 +1,99 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Jarvis map</title>
+<link rel="stylesheet" href="/static/vendor/leaflet.css">
+<style>
+ :root{--acc:#3d8bff;--fg:#e8f0ff;--dim:#8aa0cf;--line:rgba(130,170,255,.4);--bg:#070a1c;--hot:#ff4d6d}
+ [data-theme=rose]{--acc:#ff2d55;--bg:#06050d;--line:rgba(235,240,255,.4);--dim:#a79fbe}
+ html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:"Noto Sans Mono",monospace;overflow:hidden}
+ #map{position:absolute;inset:0;background:var(--bg)}
+ .leaflet-container{background:var(--bg)}
+ .panel{position:absolute;z-index:1000;background:rgba(4,8,22,.86);border:1px solid var(--line);padding:8px 10px;font-size:11px}
+ #info{left:10px;top:10px;max-width:56%} #info b{font-size:12px;letter-spacing:.08em} #info .sub{color:var(--dim);margin-top:3px}
+ #modes{display:flex;gap:6px;margin-top:7px}
+ button{font:inherit;font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--fg);background:rgba(0,0,0,.5);border:1px solid var(--line);padding:6px 9px;cursor:pointer}
+ button.on{border-color:var(--acc);color:#fff;box-shadow:0 0 8px var(--acc)}
+ button:disabled{opacity:.35}
+ #send{right:10px;bottom:76px;display:flex;flex-direction:column;gap:6px} #status{right:10px;top:10px;color:var(--dim);display:none}
+ #tiles{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:1001;display:none;text-align:center}
+ .pin{width:14px;height:14px;border-radius:50%;background:var(--hot);border:2px solid #fff;box-shadow:0 0 8px var(--hot)}
+ .me{width:16px;height:16px;border-radius:50%;background:var(--acc);border:3px solid #fff;box-shadow:0 0 0 6px rgba(61,139,255,.25),0 0 10px var(--acc)}
+ .pl{width:12px;height:12px;border-radius:50%;background:var(--acc);border:2px solid #fff}
+ .dark-osm{filter:invert(1) hue-rotate(188deg) saturate(.5) brightness(1.05) contrast(.95)}
+ [data-theme=rose] .dark-osm{filter:invert(1) hue-rotate(168deg) saturate(.25) brightness(.8) contrast(.95)}
+ .leaflet-popup-content-wrapper,.leaflet-popup-tip{background:#050a1c;color:var(--fg);border:1px solid var(--line);border-radius:0}
+ .leaflet-popup-content{font-size:11px;margin:8px 10px} .leaflet-popup-content button{margin-top:6px}
+</style></head><body>
+<div id="map"></div>
+<div id="info" class="panel"><b id="title">MAP</b><div class="sub" id="sub"></div><div class="sub" id="loc"></div><div id="modes"></div><div id="confirm" style="display:none"><button id="byes">YES, THIS IS WHERE I LIVE</button></div></div>
+<div id="send" class="panel"><button id="bmac">SEND TO MAC</button><button id="bphone">SEND TO PHONE</button></div>
+<div id="status" class="panel"></div>
+<div id="tiles" class="panel">MAP TILES ARE NOT LOADING<br><span style="color:var(--dim)">the place, route and distance are still shown</span></div>
+<script src="/static/vendor/leaflet.js"></script>
+<script>
+try { const t = parent.document.documentElement.dataset.theme; if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+const id = new URLSearchParams(location.search).get('id'); let spec = null, map, layers = [], tileOK = 0, tileBad = 0;
+const $ = s => document.querySelector(s);
+const fmtD = (m) => spec.imperial ? (m / 1609.344 >= .2 ? (m / 1609.344).toFixed(1) + ' mi' : Math.round(m * 3.281 / 10) * 10 + ' ft') : (m >= 1000 ? (m / 1000).toFixed(1) + ' km' : Math.round(m / 10) * 10 + ' m');
+const fmtT = (s) => { const m = Math.max(1, Math.round(s / 60)); return m >= 60 ? Math.floor(m / 60) + ' h ' + (m % 60) + ' min' : m + ' min'; };
+function say(t) { const s = $('#status'); s.textContent = t; s.style.display = 'block'; clearTimeout(say.t); say.t = setTimeout(() => s.style.display = 'none', 3500); }
+async function load() {
+  try { const r = await fetch('/api/map/' + id); if (!r.ok) throw new Error('gone'); spec = await r.json(); draw(true); }
+  catch (e) { $('#title').textContent = 'MAP UNAVAILABLE'; $('#sub').textContent = 'this map has expired: ask for it again'; $('#send').style.display = 'none'; }
+}
+function icon(cls) { return L.divIcon({ className: '', html: `<div class="${cls}"></div>`, iconSize: [16, 16], iconAnchor: [8, 8] }); }
+function draw(fit) {
+  layers.forEach(l => map.removeLayer(l)); layers = []; const pts = [];
+  $('#title').textContent = (spec.title || 'MAP').toUpperCase();
+  const route = spec.routes && spec.routes[spec.mode];
+  if (route) {                                   // the route: constant PIXEL width at every zoom (Leaflet weights are pixels), a light outline under it for contrast on the dark tiles,
+    const common = { smoothFactor: 0, noClip: true, lineCap: 'round', lineJoin: 'round', interactive: false };     // no simplification (it collapsed the line to a dot when zoomed out) and no clipping
+    const under = L.polyline(route.geometry, { ...common, color: '#f2f7ff', weight: 9, opacity: .9 }).addTo(map);
+    const pl = L.polyline(route.geometry, { ...common, color: getComputedStyle(document.documentElement).getPropertyValue('--acc').trim() || '#3d8bff', weight: 5, opacity: 1 }).addTo(map);
+    layers.push(under, pl); route.geometry.forEach(p => pts.push(p));
+    $('#sub').textContent = fmtT(route.dur_s) + ' · ' + fmtD(route.dist_m); } else $('#sub').textContent = spec.origin ? 'from ' + spec.origin.label + (spec.origin.source === 'ip' ? ' (guessed from your internet address)' : '') : '';
+  const SRC = { home: 'home', today: 'set today', wifi: 'Wi-Fi', ip: 'IP guess, rough', 'ip (confirmed)': 'IP, confirmed' };
+  $('#loc').textContent = spec.origin ? 'Location: ' + spec.origin.label + ' (source: ' + (SRC[spec.origin.source] || spec.origin.source || '?') + ')  ' : '';
+  if (spec.origin) { const ch = document.createElement('button'); ch.textContent = 'CHANGE'; ch.onclick = async () => { const r = await fetch(`/api/map/${id}/change`, { method: 'POST' }).then(x => x.json()).catch(() => ({})); say(r.message || ''); }; $('#loc').appendChild(ch); }
+  $('#confirm').style.display = spec.confirm ? 'block' : 'none';
+  const md = $('#modes'); md.textContent = '';
+  if (spec.routes && Object.keys(spec.routes).length) for (const [k, lab] of [['car', 'CAR'], ['foot', 'WALK'], ['bike', 'BIKE']]) {
+    const r = spec.routes[k], b = document.createElement('button'); b.textContent = lab + (r ? ' ' + fmtT(r.dur_s) : ' -'); b.disabled = !r; b.className = k === spec.mode ? 'on' : ''; b.onclick = () => { spec.mode = k; fetch(`/api/map/${id}/mode?m=${k}`, { method: 'POST' }); draw(false); }; md.appendChild(b); }
+  if (spec.origin) { layers.push(L.marker([spec.origin.lat, spec.origin.lon], { icon: icon('me') }).bindPopup('You: ' + spec.origin.label).addTo(map)); pts.push([spec.origin.lat, spec.origin.lon]); }
+  if (spec.dest) { layers.push(L.marker([spec.dest.lat, spec.dest.lon], { icon: icon('pin') }).bindPopup(spec.dest.label).addTo(map)); pts.push([spec.dest.lat, spec.dest.lon]); }
+  (spec.places || []).forEach(p => { const m = L.marker([p.lat, p.lon], { icon: icon('pl') }).addTo(map);
+    m.bindPopup(`<b>${p.name.replace(/</g, '&lt;')}</b><br>${fmtD(p.dist_m)} away<br><button data-go="${p.id}">GO THERE</button>`); layers.push(m); pts.push([p.lat, p.lon]); });
+  $('#bmac').disabled = $('#bphone').disabled = !spec.gmaps && !(spec.places && spec.places.length);
+  if (fit && pts.length) map.fitBounds(L.latLngBounds(pts).pad(.2), { maxZoom: 16, animate: false }); else if (fit && spec.origin) map.setView([spec.origin.lat, spec.origin.lon], 14);
+}
+map = L.map('map', { zoomControl: true, attributionControl: true, fadeAnimation: false, zoomAnimation: false }).setView([20, 0], 2);
+const SOURCES = [   // keyless sources, tried in order: OpenStreetMap darkened with a filter (streets stay readable), then Esri's dark gray base
+  { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', opt: { maxZoom: 19, className: 'dark-osm', attribution: '© OpenStreetMap contributors' } },
+  { url: 'https://services.arcgisonline.com/arcgis/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', opt: { maxNativeZoom: 16, maxZoom: 19, attribution: 'Esri, © OpenStreetMap contributors' } }];
+let srcIdx = -1, tl = null;
+function useSource(i) {
+  if (tl) map.removeLayer(tl); srcIdx = i; tileOK = tileBad = 0;
+  if (i >= SOURCES.length) { $('#tiles').style.display = 'block'; return; }
+  tl = L.tileLayer(SOURCES[i].url, SOURCES[i].opt).addTo(map);
+  tl.on('tileload', () => { tileOK++; $('#tiles').style.display = 'none'; });
+  tl.on('tileerror', () => { tileBad++; if (tileBad > 5 && tileOK === 0) useSource(srcIdx + 1); });
+}
+useSource(0);
+// a map inside a card/frame that was hidden, zero-size, animating, moved or resized renders black until Leaflet is told: tell it on every size change, and refit if the first size was empty
+let sized = innerWidth > 50 && innerHeight > 50;
+new ResizeObserver(() => { map.invalidateSize(false); if (!sized && innerWidth > 50 && innerHeight > 50) { sized = true; load(); } }).observe(document.getElementById('map'));
+document.addEventListener('visibilitychange', () => map.invalidateSize(false));
+setTimeout(() => { if (tileOK === 0 && srcIdx < SOURCES.length) useSource(srcIdx + 1); }, 7000);     // nothing loaded after 7 s (slow or blocked source): next source, and finally the "tiles are not loading" note
+function routeFootprint() {   // zoomed far out: the route itself is a dot, so ring the start and the end and join them with a dashed straight line
+  if (window.__rf) { window.__rf.forEach(l => map.removeLayer(l)); window.__rf = null; }
+  const r = spec.routes && spec.routes[spec.mode]; if (!r || !r.geometry || r.geometry.length < 2) return;
+  const a = r.geometry[0], b = r.geometry[r.geometry.length - 1], pa = map.latLngToContainerPoint(a), pb = map.latLngToContainerPoint(b);
+  if (pa.distanceTo(pb) >= 28) return;
+  window.__rf = [L.circleMarker(a, { radius: 11, color: '#f2f7ff', weight: 3, fillOpacity: 0, interactive: false }).addTo(map), L.circleMarker(b, { radius: 11, color: '#ff4d6d', weight: 3, fillOpacity: 0, interactive: false }).addTo(map),
+                 L.polyline([a, b], { color: '#f2f7ff', weight: 4, dashArray: '2 8', lineCap: 'round', noClip: true, smoothFactor: 0, interactive: false }).addTo(map)];
+}
+map.on('zoomend moveend', routeFootprint);
+map.on('popupopen', e => { const b = e.popup.getElement().querySelector('[data-go]'); if (b) b.onclick = async () => { say('Working out the route…'); const r = await fetch(`/api/map/${id}/goto?pid=${b.dataset.go}`, { method: 'POST' }); if (r.ok) { spec = await r.json(); draw(true); } else say('No route found'); }; });
+$('#byes').onclick = async () => { const r = await fetch(`/api/map/${id}/confirm`, { method: 'POST' }).then(x => x.json()).catch(() => ({})); say(r.message || ''); $('#confirm').style.display = 'none'; };
+for (const [sel, to] of [['#bmac', 'mac'], ['#bphone', 'phone']]) $(sel).onclick = async () => { const r = await fetch(`/api/map/${id}/send?to=${to}`, { method: 'POST' }); const j = await r.json().catch(() => ({})); say(j.message || (r.ok ? 'Sent' : 'Could not send')); };
+load();
+</script></body></html>

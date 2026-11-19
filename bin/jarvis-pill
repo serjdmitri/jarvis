@@ -1,0 +1,4 @@
+#!/bin/sh
+# the tiny "BACK TO JARVIS" pill (shown only while another window is in front of Jarvis)
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
+LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so exec .venv/bin/python -m jarvis.pill "$@"

@@ -1,0 +1,24 @@
+#!/bin/sh
+# jarvis-phone topic   print the secret ntfy topic (only to THIS terminal; do not paste it anywhere public)
+# jarvis-phone setup   create the topic if needed and show iPhone setup steps (does not print the topic)
+# jarvis-phone test    send ONE test notification (only when you run it yourself)
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
+exec .venv/bin/python -c '
+import sys
+from jarvis import phone
+cmd = sys.argv[1] if len(sys.argv) > 1 else "setup"
+if cmd == "topic":
+    if not sys.stdout.isatty():
+        sys.exit("refusing to print the topic into a pipe or log; run this directly in a terminal")
+    print(phone.get_topic())
+elif cmd == "setup":
+    phone.get_topic()
+    print("Topic created (kept in", phone.topic_path(), ", mode 600, not in git).")
+    print("On your iPhone: 1) install the free \"ntfy\" app  2) tap +  3) Subscribe to topic  4) paste the topic printed by:  bin/jarvis-phone topic")
+    print("Leave the server as ntfy.sh. Then run:  bin/jarvis-phone test")
+elif cmd == "test":
+    r = phone.send({"title": "Jarvis", "message": "Test from Jarvis. If you can read this, phone setup works."})
+    print(r["message"])
+else:
+    sys.exit("usage: jarvis-phone topic|setup|test")
+' "$@"

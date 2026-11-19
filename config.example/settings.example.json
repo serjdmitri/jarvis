@@ -1,0 +1,18 @@
+{
+  "_about": "Copy to ~/.config/jarvis/settings.json (Jarvis creates and edits this file itself; you normally never touch it). Everything private lives in ~/.config/jarvis, never in this repository.",
+  "home_area": "123 Example Street, Springfield",
+  "home_lat": 0.0,
+  "home_lon": 0.0,
+  "units": "metric",
+  "followup": false,
+  "auto_visuals": true,
+  "stay_out": true,
+  "machine_warnings": true,
+  "idle_minutes": 5,
+  "clock24": false,
+  "clock_seconds": true,
+  "speed_jarvis": 1.0,
+  "speed_rose": 1.0,
+  "phone_cam_url": "http://192.168.1.50:8080/video",
+  "claude_dir": "~/projects/example"
+}

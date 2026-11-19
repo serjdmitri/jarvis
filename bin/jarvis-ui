@@ -1,0 +1,22 @@
+#!/bin/sh
+# Jarvis full-screen UI: starts the web backend if needed, then opens Chromium in kiosk mode.
+#   bin/jarvis-ui         open the kiosk        bin/jarvis-ui stop    close the kiosk window (backend keeps running)
+#   JARVIS_PORT=8765      extra args go to chromium
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
+PORT=${JARVIS_PORT:-8765}
+if [ "$1" = "stop" ]; then : > "${XDG_RUNTIME_DIR:-/tmp}/jarvis.stopped"; pkill -f "chromium.*--class=jarvis-ui"; exit 0; fi   # (the flag tells the watchdog this was on purpose)
+# ONE Jarvis only: reuse an existing kiosk window instead of starting another (the cause of the duplicate windows was the login autostart
+# starting the old small GTK window plus a second launch of this script). A lock file covers the seconds before the window exists.
+if hyprctl clients -j 2>/dev/null | grep -q '"class": "jarvis-ui"'; then
+  hyprctl dispatch 'hl.dsp.focus({ window = "class:jarvis-ui" })' >/dev/null 2>&1; exit 0
+fi
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/jarvis-ui.lock"
+flock -n 9 || exit 0
+if ! curl -s -o /dev/null "http://127.0.0.1:$PORT/"; then
+  bin/jarvisctl quit >/dev/null 2>&1          # the GTK window app would hold the control socket
+  setsid nohup .venv/bin/python -m jarvis.webapp >/tmp/jarvis-web.log 2>&1 &
+  for _ in $(seq 80); do curl -s -o /dev/null "http://127.0.0.1:$PORT/" && break; sleep 0.5; done
+fi
+exec chromium --kiosk --class=jarvis-ui --user-data-dir="$HOME/.cache/jarvis-ui" \
+  --ozone-platform=wayland --noerrdialogs --disable-infobars --disable-pinch --overscroll-history-navigation=0 \
+  --password-store=basic --no-first-run --disable-features=Translate --autoplay-policy=no-user-gesture-required --disable-background-networking --disable-sync "$@" "http://127.0.0.1:$PORT/"

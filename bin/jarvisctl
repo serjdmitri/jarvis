@@ -1,0 +1,3 @@
+#!/bin/sh
+# send a command to the running Jarvis: start | stop | look | reset | show | quit | status
+exec python3 "$(dirname "$(readlink -f "$0")")/../jarvis/ctl.py" "$@"

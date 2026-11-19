@@ -1,0 +1,16 @@
+#!/bin/sh
+# ABORT: leave the Jarvis full screen and return to the normal Omarchy desktop WITHOUT killing Jarvis. Bound to SUPER+ESCAPE in hypr/jarvis.lua.
+# Talks only to Hyprland (no Python, no server, no page), so it works even if the page hung or the server crashed.
+KWS=$(hyprctl clients -j 2>/dev/null | python3 -c "import sys,json
+c=[x for x in json.load(sys.stdin) if x['class']=='jarvis-ui']
+print(c[0]['workspace']['id'] if c else 9)" 2>/dev/null)
+[ -z "$KWS" ] && KWS=9
+ACT=$(hyprctl activeworkspace -j 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])" 2>/dev/null)
+PREV=$(cat "${XDG_RUNTIME_DIR:-/tmp}/jarvis.prevws" 2>/dev/null)
+case "$PREV" in ''|*[!0-9]*) PREV=1;; esac
+[ "$PREV" = "$KWS" ] && PREV=1
+if [ "$ACT" = "$KWS" ] || [ -z "$ACT" ]; then
+  hyprctl dispatch "hl.dsp.focus({ workspace = \"$PREV\" })" >/dev/null 2>&1
+else
+  hyprctl dispatch "hl.dsp.focus({ workspace = \"$KWS\" })" >/dev/null 2>&1      # pressed again on the desktop: back to Jarvis
+fi

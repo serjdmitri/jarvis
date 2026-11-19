@@ -1,0 +1,4 @@
+#!/bin/sh
+# launch the Jarvis app (no-op if already running)
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
+exec .venv/bin/python -m jarvis.app "$@"
