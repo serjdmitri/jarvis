@@ -9,7 +9,7 @@ import time
 
 from . import config
 
-DIR = config.ROOT / "data" / "look"
+DIR = config.DATA / "look"
 INDEX = DIR / "index.json"
 WATCH_MAX_S, WATCH_EVERY_S = 600, 20
 

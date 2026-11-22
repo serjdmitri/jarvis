@@ -6,7 +6,7 @@ import time
 
 from . import config, memory
 
-PATH = config.ROOT / "data" / "threads.json"
+PATH = config.DATA / "threads.json"
 RESUME = re.compile(r"\b(?:where were we|continue (?:where|from)|pick up where|resume|what (?:were we|did we) (?:doing|do|talk about)|last time|yesterday we|earlier (?:today|we))\b", re.I)
 
 

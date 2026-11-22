@@ -9,8 +9,8 @@ from collections import deque
 
 from . import config, memory, opener, terminal
 
-SCRATCH = config.ROOT / "data" / "scratch.txt"
-LAYOUTS = config.ROOT / "data" / "layouts.json"
+SCRATCH = config.DATA / "scratch.txt"
+LAYOUTS = config.DATA / "layouts.json"
 CLIP = deque(maxlen=30)
 _clip = {"proc": None}
 TOOLS = {"terminal": {"kind": "term"}, "claude": {"kind": "term", "preset": "claude"}, "files": {"kind": "files"}, "launcher": {"kind": "launch"}, "scratchpad": {"kind": "scratch"}, "clipboard": {"kind": "clip"}}

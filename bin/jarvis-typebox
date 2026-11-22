@@ -1,0 +1,6 @@
+#!/bin/sh
+# The quick type box near the pointer (see jarvis/typebox.py). Run again while it is open to close it.
+#   bin/jarvis-typebox [persona-id Name]
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
+if pgrep -f "^\.venv/bin/python -m jarvis\.typebox" >/dev/null; then pkill -f "^\.venv/bin/python -m jarvis\.typebox"; exit 0; fi
+LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so exec .venv/bin/python -m jarvis.typebox "$@"

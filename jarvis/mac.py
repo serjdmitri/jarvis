@@ -16,7 +16,7 @@ import urllib.request
 from . import config, jarvis_pair as jp, opener
 
 SERVER = "https://ntfy.sh"
-EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".mov", ".m4v", ".pdf", ".txt", ".md"}
+EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".mov", ".m4v", ".webm", ".pdf", ".txt", ".md"}
 MAX_BYTES = 15 * 1024 * 1024         # the Mac side allows 25 MB, but the free ntfy.sh server only accepts attachments up to 15 MB
 SEND_INTENT = re.compile(r"\b(?:send|share|text|forward|push|message)\b.*\bmac(?:book)?\b|\bmac(?:book)?\b.*\b(?:send|share|text)\b", re.I)
 _code_ram = None                      # the last pairing code, in memory only
@@ -202,6 +202,13 @@ def validate(p):
         if not u or not u.startswith("https://"):
             return None
         return {"kind": "url", "url": u, "label": str(p.get("label") or urllib.parse.urlsplit(u).hostname)[:60]}
+    if p.get("share"):                                     # any file: served once on the local network, fetched and checked by the Mac (never opened there)
+        from . import fileshare
+        try:
+            info = fileshare.stage(p["share"], p.get("name"))
+        except fileshare.Refused as e:
+            return {"kind": "refused", "why": str(e)}
+        return {"kind": "share", "info": info, "label": info["name"]}
     if p.get("file"):
         f = check_file(p["file"])
         return {"kind": "file", "file": f, "label": os.path.basename(f)} if f else None
@@ -211,6 +218,9 @@ def validate(p):
 # ---------------------------------------------------------------------------- sending
 def build(v, key):
     """-> (signed message text, file path or None)."""
+    if v["kind"] == "share":
+        i = v["info"]
+        return jp.sign(key, {"type": "fetch", "url": i["url"], "name": i["name"], "size": i["size"], "sha256": i["sha256"]}), None
     if v["kind"] == "url":
         return jp.sign(key, {"type": "open_url", "url": v["url"]}), None
     h = hashlib.sha256(open(v["file"], "rb").read()).hexdigest()
@@ -224,6 +234,8 @@ def send(p):
     if not keys:
         return {"ok": False, "message": "not paired"}
     v = validate(p)
+    if v and v["kind"] == "refused":
+        return {"ok": False, "message": v["why"]}
     if not v:
         return {"ok": False, "message": "nothing valid to send (https links only, or a file Jarvis made: image, video, PDF or text under 15 MB)"}
     if time.time() - _last < 3:

@@ -12,7 +12,7 @@ import urllib.request
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from . import settings
+from . import maps, settings
 
 UA = {"User-Agent": "jarvis-local-assistant/0.1"}
 WMO = {0: "clear", 1: "mostly clear", 2: "partly cloudy", 3: "overcast", 45: "foggy", 48: "foggy", 51: "light drizzle", 53: "drizzle",
@@ -47,7 +47,8 @@ def context_line():
     """One line prepended to every request: the date/time (so 'what's the date' and 'tonight' work) and the home area."""
     now = datetime.now().astimezone()
     home = settings.get("home_area")
-    return (f"[context: now {now.strftime('%A %d %B %Y, %-I:%M %p')} {now.tzname()}; "
+    auto3d = " Auto 3D is ON: for a physical or biological subject you MAY also add a show_3d intent." if settings.get("auto_3d") else ""
+    return (f"[context:{auto3d} now {now.strftime('%A %d %B %Y, %-I:%M %p')} {now.tzname()}; "
             f"Mac paired: {'yes' if _mac_paired() else 'no (if asked to send something to the Mac, say it is not paired and to say pair my Mac)'}; "
             f"home area: {home if home else 'NOT SET (if a question needs the user\'s location, ask which town or area, in one short sentence)'}]\n")
 
@@ -147,37 +148,22 @@ def weather(text, persona):
         return None
     m = re.search(r"\b(?:in|for|at|near)\s+(.+?)(?:\s+(?:today|tomorrow|tonight|now|right now|this\s+\w+|next\s+\w+)\b)?\s*[?.!]*$", text.strip(), re.I)
     place = m.group(1).strip() if m and not re.fullmatch(r"(the|a|my)\b.*", m.group(1).strip(), re.I) else None
-    imperial = settings.get("units") == "imperial"
+    imperial = settings.get("units") == "imperial" or (settings.get("units") is None and maps.imperial())
+    from . import weather as wx
     if place:
         g = geocode(place)
         if not g:
             return {"speech": f"I couldn't find a place called {place}."}
+        loc = (g["name"], g["lat"], g["lon"], g.get("label"))
     else:
-        if settings.get("home_lat") is None:
-            home = settings.get("home_area")
-            g = geocode(home) if home else None
-            if not g:
-                return {"speech": "I don't know where you are yet. Which town should I use?", "expect": "home", "retry": text}
-        else:
-            g = {"name": (settings.get("home_area") or "home").split(",")[0], "lat": settings.get("home_lat"), "lon": settings.get("home_lon"), "label": settings.get("home_area")}
-    q = (f"https://api.open-meteo.com/v1/forecast?latitude={g['lat']}&longitude={g['lon']}&timezone=auto&forecast_days=4"
-         "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation,relative_humidity_2m"
-         "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
-         + ("&temperature_unit=fahrenheit&wind_speed_unit=mph" if imperial else ""))
-    f = _get_json(q); c, d = f["current"], f["daily"]; u, wu = _unit(imperial)
-    desc = lambda code: WMO.get(code, "unsettled")
-    days = [{"name": datetime.fromisoformat(d["time"][i]).strftime("%a"), "hi": round(d["temperature_2m_max"][i]), "lo": round(d["temperature_2m_min"][i]),
-             "desc": desc(d["weather_code"][i]), "pop": d["precipitation_probability_max"][i]} for i in range(len(d["time"]))]
-    card = {"type": "weather", "title": f"Weather · {g['name']}", "place": g.get("label") or g["name"], "unit": u, "wind_unit": wu,
-            "temp": round(c["temperature_2m"]), "feels": round(c["apparent_temperature"]), "desc": desc(c["weather_code"]), "wind": round(c["wind_speed_10m"]),
-            "humidity": c["relative_humidity_2m"], "days": days}
-    tomorrow = bool(re.search(r"\btomorrow\b", t))
-    if tomorrow and len(days) > 1:
-        x = days[1]; speech = f"Tomorrow in {g['name']}: {x['desc']}, a high of {x['hi']} and a low of {x['lo']}" + (f", with a {x['pop']} percent chance of rain." if x["pop"] and x["pop"] >= 20 else ".")
-    else:
-        x = days[0]; rain = (f" There's a {x['pop']} percent chance of rain today." if x["pop"] and x["pop"] >= 30 else " Rain looks unlikely.") if "rain" in t or "umbrella" in t or (x["pop"] or 0) >= 30 else ""
-        speech = f"It's {card['temp']} degrees and {card['desc']} in {g['name']}, with a high of {x['hi']} today.{rain}"
-    return {"speech": speech, "cards": [card]}
+        loc = wx.where()                                    # where you really are: the iPhone's GPS fix, the home area, Wi-Fi, then an IP guess
+        if not loc:
+            return {"speech": "I don't know where you are yet. Which town should I use?", "expect": "home", "retry": text}
+    try:
+        card = wx.card(*loc, imperial=imperial)
+    except OSError:
+        return {"speech": "I can't reach the weather service right now."}
+    return {"speech": wx.summary(card, tomorrow=bool(re.search(r"\btomorrow\b", t))), "cards": [card]}
 
 
 # ----------------------------------------------------------------------------- home area
@@ -481,8 +467,26 @@ def window_command(text):
 
 
 def spotify_command(text):
-    from . import spotify
-    return {"speech": "Here are the steps to set up Spotify.", "spotify": "setup"} if spotify.parse_command(text) else None
+    """Spotify setup, and (once connected) play/search/pause/next/previous/volume/devices/what's playing. Plain "play X" falls back to YouTube Music when Spotify has no player."""
+    from . import music, spotify, spotify_cli
+    if spotify.parse_command(text):
+        return {"speech": "Here are the steps to set up Spotify.", "spotify": "setup"}
+    if not spotify.connected() or settings.get("spotify_premium") is False:
+        return None
+    import time as _t
+    cmd = spotify_cli.parse(text)
+    if cmd and cmd["op"] == "status" and music.STATE["active"] and not re.search(r"spotify", text, re.I):
+        return None                                           # YouTube music is what is playing: its own handler answers
+    if not cmd and _t.time() - spotify_cli.LAST["t"] < 2 * 3600 and not music.STATE["active"]:
+        cmd = spotify_cli.parse_control(text)                 # pause / next / volume go to Spotify only while it is what you are listening to
+    if not cmd:
+        return None
+    r = spotify_cli.run(cmd)
+    if not r["ok"] and cmd["op"] == "play" and not cmd.get("explicit") and not r["speech"].lower().startswith(("i couldn't find", "spotify refused")):
+        return None                                           # Spotify has no player or says no: the YouTube Music path plays it instead
+    if r["ok"] and cmd["op"] == "play":
+        music.STATE["active"] = False                         # Spotify is playing now, not the YouTube queue
+    return {"speech": r["speech"], **({"cards": r["cards"]} if r.get("cards") else {})}
 
 
 def sound_command(text):
@@ -521,9 +525,10 @@ def instant_command(text):
 
 def qr_command(text):
     from . import opener, qr, video
-    if not qr.parse_command(text):
+    q = qr.parse_command(text)
+    if not q:
         return None
-    url = opener.EMBED.get("page_url") or video.LAST["url"]
+    url = q.get("url") or opener.EMBED.get("page_url") or video.LAST["url"]
     if not url:
         return {"speech": "There is no link open to make a code for. Open something first."}
     path = qr.make(url)
@@ -545,6 +550,151 @@ def alerts_command(text):
     return {"speech": f"You have {len(new)} new alert{'s' if len(new) != 1 else ''}. {spoken}"[:500], "cards": [{"type": "list", "title": "New alerts", "items": [((n["title"] + "  ") if n["title"] else "") + n["message"] for n in new]}]}
 
 
+def news_command(text):
+    from . import news
+    o = news.open_command(text)
+    if o:
+        return {"speech": "", "open": {"action": "open_url", "url": o["link"], "label": o["title"][:40]}}          # "open that one": the page in the frame
+    r = news.parse_command(text)
+    if not r:
+        return None
+    c = news.card(r["topic"])
+    if not c:
+        return {"speech": "I couldn't reach the news feeds right now."}
+    first = c["items"][0]
+    return {"speech": f"{first['source']}: {first['title'].rstrip('.')}.", "cards": [c]}
+
+
+WIDGETS = {"map": r"(?:the |my )?map(?: widget)?|where i am|where am i", "music": r"music(?: widget| player)?|the player|my music", "chat": r"chat(?: widget| window)?|the chat|terminal chat", "weather": r"(?:the )?weather(?: widget| card)?", "timers": r"(?:my |the )?(?:timers|reminders)(?: widget)?",
+           "notes": r"(?:my |the )?notes(?: widget)?|(?:my |the )?(?:shopping |to-?do )?list", "today": r"(?:my |the )?(?:today|today's|day)(?: widget| card| view| summary)?|my day", "news": r"(?:the )?news(?: widget)?"}
+
+
+def widget_command(text):
+    """"show the music widget", "show chat", "show the weather", "show my timers", "show notes", "show today": one word each, no brain."""
+    low = re.sub(r"\s+", " ", text.lower().strip(" .?!"))
+    m = re.fullmatch(r"(?:please )?(?:show|open|bring up|pull up|give me)(?: me)?(?: the)? (.+?)(?: widget)?", low)
+    if not m:
+        return None
+    for name, pat in WIDGETS.items():
+        if re.fullmatch(pat, m.group(1)) and name not in ("weather", "news", "timers"):          # (weather, news and reminders have their own richer commands)
+            return {"speech": "", "widget": name}
+    if m.group(1) in ("the music widget", "music widget", "the chat widget", "chat widget"):
+        return {"speech": "", "widget": "music" if "music" in m.group(1) else "chat"}
+    return None
+
+
+def phone_find_command(text):
+    from . import findphone
+    return {"speech": "I'm sending a loud alert to your phone now.", "findphone": True} if findphone.parse_command(text) else None
+
+
+def btspeaker_command(text):
+    from . import btspeaker
+    r = btspeaker.parse_command(text)
+    if not r:
+        return None
+    return {"speech": "Here are the steps to use the Echo as a plain Bluetooth speaker. Nothing changes until you press yes.", "btspeaker": "setup"} if r["kind"] == "setup" else {"speech": "", "btspeaker": "back"}
+
+
+def claudestat_command(text):
+    low = re.sub(r"\s+", " ", text.lower().strip(" .?!"))
+    if re.fullmatch(r"(?:please )?(?:set up|setup|connect|install|show) (?:the )?(?:claude|claude code|codex)(?: code)? (?:status|hooks?|badge|notifications?)(?: badge)?", low):
+        return {"speech": "Here is the exact change for Claude Code. Nothing is written until you do it.", "claudehook": True}
+    return None
+
+
+def presence_command(text):
+    from . import presence
+    r = presence.parse_command(text)
+    return {"speech": "", "presence": r} if r else None
+
+
+def sendfile_command(text):
+    low = re.sub(r"\s+", " ", text.lower().strip(" .?!"))
+    m = re.fullmatch(r"(?:please )?(?:send|share|push|put|get)(?: me)?(?: the| my)? file (?:called |named )?(.+?) (?:to|onto|on) (?:my )?(mac|macbook|computer)", low)
+    if m:
+        return {"speech": "", "sendfile": m.group(1)}
+    return None
+
+
+def phonebrief_command(text):
+    from . import notifier
+    r = notifier.parse_command(text)
+    if not r:
+        return None
+    settings.update(**{"brief_" + r["slot"]: r["time"], "notify_briefing": True} if r["time"] else {"brief_" + r["slot"]: None})
+    return {"speech": f"Okay, a {r['slot']} briefing on your phone at {r['time']}." if r["time"] else f"The {r['slot']} briefing is off."}
+
+
+def learn_command(text):
+    from . import learn
+    r = learn.parse_command(text)
+    return {"speech": "", "learn": r} if r else None
+
+
+def projects_command(text):
+    from . import product, projects
+    r = projects.parse_command(text)
+    if r:
+        return {"speech": "", "projects": r}
+    r = product.parse_command(text)
+    return {"speech": "", "product": r} if r else None
+
+
+def settingsio_command(text):
+    from . import settingsio
+    r = settingsio.parse_command(text)
+    if r:
+        return {"speech": "", "settingsio": r}
+    low = re.sub(r"\s+", " ", text.lower().strip(" .?!"))
+    if re.fullmatch(r"(?:please )?(?:run|do|start) (?:a |the )?self[- ]?test|(?:please )?(?:check|test) yourself|(?:please )?run (?:a )?(?:system )?check", low):
+        return {"speech": "Checking everything.", "selftest": True}
+    if re.fullmatch(r"(?:please )?back up my (?:jarvis )?data|(?:please )?make a backup(?: of my data)?", low):
+        return {"speech": "", "backup": True}
+    return None
+
+
+def daylog_command(text):
+    from . import daylog
+    r = daylog.parse_command(text)
+    return {"speech": "", "daylog": r} if r else None
+
+
+def safety_command(text):
+    """Things Jarvis never does, refused in code (no brain call): buying, ordering, paying, sending money, entering passwords or card numbers, and naming a real person from their face."""
+    low = re.sub(r"\s+", " ", text.lower().strip(" .?!"))
+    if re.search(r"\b(?:buy|order|purchase|get me)\b (?:it|that|this|these|those|them|one|me .+|.+ (?:on|from|at) (?:amazon|best buy|ebay|walmart|target|aliexpress))$|\b(?:put|add)\b .*\b(?:cart|basket)\b|\bcheck ?out\b$|\bpay (?:for|the|my)\b|\b(?:send|wire|transfer|venmo|zelle|paypal)\b .*\b(?:money|dollars|bucks|\$\d+)|\b(?:enter|type|fill in|put in)\b .*\b(?:password|passcode|card number|credit card|cvv|pin)\b|\bplace (?:the |an |my )?order\b", low):
+        return {"speech": "I don't buy, order or pay for anything, and I never enter passwords or card numbers. I can show you where to get it, with prices, and you do the rest. Say: where can I get one."}
+    if re.search(r"\bwho(?:'s| is| are)? (?:this|that|he|she|they)\b.*\b(?:person|man|woman|guy|girl|lady|boy|kid)\b|\b(?:who|what)(?:'s| is) (?:the )?(?:person|man|woman|guy|girl) (?:in|on) (?:the |this )?(?:picture|photo|camera|frame|screen)\b|\bidentify (?:this |that |the )?(?:person|man|woman|face)\b|\bwhose face\b|\bwho is this\b$", low):
+        return {"speech": "I don't identify people from their face. I can tell you what is visible: a person, their clothes, what they are holding."}
+    return None
+
+
+def scancode_command(text):
+    low = re.sub(r"\s+", " ", text.lower().strip(" .?!"))
+    if re.fullmatch(r"(?:please )?(?:scan|read) (?:this |the |that )?(?:bar ?code|qr ?code|qr|code)(?: on (?:this|it|the box))?|(?:please )?what(?:'s| is) (?:this |that )?(?:bar ?code|qr ?code)", low):
+        return {"speech": "Hold the code in front of the camera.", "scancode": True}
+    return None
+
+
+def textmsg_command(text):
+    from . import textmsg
+    r = textmsg.parse_command(text)
+    return {"speech": "", "textmsg": r} if r else None
+
+
+def whisper_command(text):
+    from . import whisper_mode
+    r = whisper_mode.parse_command(text)
+    if not r:
+        return None
+    if r["kind"] == "on":
+        return {"speech": "Whisper mode on.", "whisper": {"whisper": True}}
+    if r["kind"] == "off":
+        return {"speech": "Whisper mode off.", "whisper": {"whisper": False, "whisper_auto": False}}
+    return {"speech": f"I'll whisper from {r['from']} to {r['to']}.", "whisper": {"whisper_auto": True, "whisper_from": r["from"], "whisper_to": r["to"]}}
+
+
 def music_command(text):
     from . import music
     r = music.parse_command(text)
@@ -553,10 +703,10 @@ def music_command(text):
     kind = r["kind"]
     if kind == "play":
         sp, act = music.start(r["query"])
-        return {"speech": sp, "open": act} if act else {"speech": sp}
+        return {"speech": sp, "open": act, "cards": [music.card()]} if act else {"speech": sp}
     if kind in ("next", "prev"):
         sp, act = music.step(1 if kind == "next" else -1)
-        return {"speech": sp, "open": act} if act else {"speech": sp}
+        return {"speech": sp, "open": act, "cards": [music.card()]} if act else {"speech": sp}
     if kind == "what":
         return {"speech": music.now_playing()}
     if kind == "stop":
@@ -719,6 +869,79 @@ def mac_command(text):
 
 
 # ----------------------------------------------------------------------------- interface
+def persona_command(text):
+    """"switch to the coach", "be the captain", "next persona", "who can you be": the wake word, spoken name, voice and look switch together."""
+    from . import personas
+    low = re.sub(r"[^a-z ]", " ", text.lower())
+    low = re.sub(r"\s+", " ", low).strip()
+    if re.fullmatch(r"(?:please )?(?:list|show|what are|which|who can you be|what personas?(?: do you have)?|which personas?(?: do you have)?|show (?:me )?(?:the )?personas?)(?: your| the| my)? ?(?:personas?|characters?|voices)?", low) and re.search(r"person|character|who can you be", low):
+        names = ", ".join(v["name"] for v in personas.PERSONAS.values())
+        return {"speech": f"I can be {names}. Say, switch to, and a name.", "cards": [{"type": "list", "title": "Personas", "items": [f"{v['name']}: {v['prompt'].split(':')[0].replace('You are ', '').split(',', 1)[-1].strip() or v['name']}" for v in personas.PERSONAS.values()]}]}
+    if re.fullmatch(r"(?:please )?(?:next|change|cycle) (?:the )?(?:persona|character|voice)", low):
+        return {"speech": "", "persona": personas.cycle(_CUR["p"])}
+    m = re.fullmatch(r"(?:please )?(?:switch|change|go|swap|turn)(?: over)? (?:to|into) (?:the |being )?(.{2,20})|(?:please )?(?:be|become|talk like|sound like|put on) (?:the )?(.{2,20})|(?:please )?(?:let me talk to|put me through to|get me) (?:the )?(.{2,20})|(?:please )?(?:use|activate|enable) (?:the )?(.{2,20}?)(?: persona| voice| character)", low)
+    if m:
+        pid = personas.find(next(g for g in m.groups() if g))
+        if pid:
+            return {"speech": "", "persona": pid}
+    return None
+
+
+_CUR = {"p": "jarvis"}
+
+
+def markets_command(text):
+    """The Markets Desk (read-only): the master routes the words to a seat; trading and advice requests get the no-trading / not-advice reply and nothing else happens."""
+    from . import markets, mktdesk
+    if not mktdesk.enabled():
+        return None
+    r = markets.route(text)
+    res = mktdesk.answer(r, text) if r else None
+    if res:
+        res.setdefault("mkt", []).insert(0, {"op": "seat", "seat": r["seat"], "what": r["intent"].replace("_", " ")})
+    return res
+
+
+def holo_command(text):
+    """3D models: "show me an atom in 3D", my scenes, compare, tour, auto 3D. A model that is open also takes part commands (select the piston, explode it...), handled in core."""
+    from . import holo, net
+    return holo.command(text, online=net.online)
+
+
+def orb_command(text):
+    """"move to the top", "move left", "put the orb in the middle", "reset the orb position": the small desktop orb moves (it is remembered; see orb.py)."""
+    low = re.sub(r"\s+", " ", text.lower().strip(" .?!"))
+    if re.fullmatch(r"(?:please )?reset (?:the |my )?orb(?: position| location)?|(?:please )?put the orb back(?: where it was| in its place)?", low):
+        return {"speech": "Orb position reset.", "orb": "reset"}
+    m = re.fullmatch(r"(?:please )?move(?: the| my)?(?: orb| yourself)? (up|down|left|right)(?: a (?:bit|little))?(?: please)?", low)
+    if m:
+        return {"speech": "", "orb": {"left": "leftstep", "right": "rightstep"}.get(m.group(1), m.group(1))}
+    m = re.fullmatch(r"(?:please )?(?:move|put|send|drag|take)(?: the| my)?(?: little| small)?(?: orb| circle| yourself)?(?: over)? (?:to|in|into|at)? ?(?:the )?(top|bottom|middle|centre|center|left|right|corner)(?: of the screen| side)?(?: please)?", low)
+    if m:
+        op = {"centre": "middle", "center": "middle"}.get(m.group(1), m.group(1))
+        return {"speech": {"corner": "Back to the corner.", "middle": "To the middle."}.get(op, f"To the {op}."), "orb": op}
+    return None
+
+
+def buddy_command(text):
+    """Recurring reminders ("remind me every weekday at 9 to stand up"), their list/pause/edit/delete, and promises (list, done, delete, auto-save)."""
+    from . import buddy
+    low = re.sub(r"\s+", " ", text.lower().strip(" .?!"))
+    m = re.fullmatch(r"(?:please )?(?:turn |switch )?(on|off) (?:the )?auto[- ]?save(?:ing)?(?: of)? promises|(?:please )?(start|stop) (?:saving|keeping) (?:my )?promises automatically", low)
+    if m:
+        on = (m.group(1) or m.group(2)) in ("on", "start")
+        from . import settings
+        settings.update(auto_promises=on)
+        return {"speech": "I'll save promises automatically." if on else "I'll ask before saving a promise."}
+    c = buddy.parse_command(text)
+    if c and not (c["kind"] in ("manage", "edit") and c["which"].strip() in ("a", "an", "my", "the", "new", "another")):
+        return buddy.run_command(c)                           # list / pause / resume / edit / delete first: "change the water reminder to every 3 hours" is an edit, not a new reminder
+    if re.search(r"\bevery\b", low) and re.search(r"\b(?:remind|reminder|ping|nudge)\b", low) and buddy.secret(text):
+        return {"speech": "I don't keep reminders with passwords, card numbers or codes."}
+    r = buddy.parse_recurring(text)
+    return buddy.add_recurring_reply(r) if r else None
+
+
 def ui_command(text):
     t = text.lower()
     obj = r"(?:the |my )?(?:interface|ui|gui|controls|buttons|display|screen clutter)"
@@ -734,13 +957,19 @@ def handle(text, persona="jarvis"):
     """-> {"speech": str, "cards": [...]} when answered locally, else None."""
     if not text:
         return None
-    for fn in (ui_command, lambda t: prefs_command(t, persona), meta_command, desk_command, calmail_command, mic_command, send_command, visual_command, phonecam_command, spotify_command, sound_command, idle_command, quiet_command, qr_command, instant_command, alerts_command, music_command, scene_command, translate_command, read_command, health_command, memory_command, maps_command, extras_command, dictate_command, research_command, video_command, window_command, open_command, mac_command, volume_command, timer_command, set_home, lambda t: weather(t, persona)):
+    _CUR["p"] = persona
+    if persona != "jarvis" and re.fullmatch(r"(?:please )?(?:go )?back to jarvis|(?:please )?(?:be )?jarvis again", text.lower().strip(" .?!")):
+        return {"speech": "", "persona": "jarvis"}               # as another persona, "go back to Jarvis" means the persona (as Jarvis it still means the window)
+    for fn in (safety_command, textmsg_command, scancode_command, ui_command, persona_command, daylog_command, settingsio_command, projects_command, learn_command, phonebrief_command, sendfile_command, presence_command, claudestat_command, phone_find_command, btspeaker_command, whisper_command, widget_command, news_command, markets_command, holo_command, orb_command, buddy_command, lambda t: prefs_command(t, persona), meta_command, desk_command, calmail_command, mic_command, send_command, visual_command, phonecam_command, spotify_command, sound_command, idle_command, quiet_command, qr_command, instant_command, alerts_command, music_command, scene_command, translate_command, read_command, health_command, memory_command, maps_command, extras_command, dictate_command, research_command, video_command, window_command, open_command, mac_command, volume_command, timer_command, set_home, lambda t: weather(t, persona)):
         try:
             r = fn(text)
         except Exception as e:                        # network down etc: fall through to the brain
             print("skill failed:", fn, e)
             r = None
         if r:
+            if r.get("persona"):
+                from . import autopersona
+                autopersona.named_by_user()                        # you chose a persona yourself: no automatic switching for a while
             return r
     try:
         td = time_date(text)

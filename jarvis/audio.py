@@ -25,15 +25,20 @@ def _die_with_parent():
 
 
 def cleanup_stale(max_age_s=600):
-    """Delete old request recordings left in /tmp (files nobody is writing any more)."""
+    """Delete Jarvis's own temp files that nobody is using any more (request recordings, wake-word keyword files, wake debug clips, pre-synthesis scratch)."""
     import glob
     import time as _t
-    for f in glob.glob(os.path.join(tempfile.gettempdir(), "jarvis-rec-*.wav")):
-        try:
-            if _t.time() - os.path.getmtime(f) > max_age_s:
-                os.unlink(f)
-        except OSError:
-            pass
+    for prefix in ("jarvis-rec-", "jarvis-kw-", "jarvis-wake-", "jarvis-pre-", "jarvis-warm-", "phonecam-"):
+        for f in glob.glob(os.path.join(tempfile.gettempdir(), prefix + "*")):
+            try:
+                if _t.time() - os.path.getmtime(f) > max_age_s:
+                    if os.path.isdir(f):
+                        import shutil
+                        shutil.rmtree(f, ignore_errors=True)
+                    else:
+                        os.unlink(f)
+            except OSError:
+                pass
 
 
 class Recorder:
@@ -123,20 +128,10 @@ def read_wav(path):
 _ACK = None
 
 
-def ack():
-    """Short beep, played without blocking: 'I heard you let go'."""
-    global _ACK
-    from . import config
-    if _ACK is None:
-        config.RUN_DIR.mkdir(exist_ok=True)
-        _ACK = str(config.RUN_DIR / "ack.wav")
-        n = int(48000 * 0.09)
-        t = np.arange(n) / 48000
-        y = np.sin(2 * np.pi * 1000 * t) * np.minimum(1, np.minimum(t / 0.008, (t[-1] - t) / 0.02)) * 0.22
-        with wave.open(_ACK, "wb") as w:
-            w.setnchannels(1); w.setsampwidth(2); w.setframerate(48000)
-            w.writeframes((y * 32767).astype(np.int16).tobytes())
-    subprocess.Popen(["pw-play", _ACK], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def ack(event="wake"):
+    """The short chime in the active persona's style, played without blocking: wake = "I heard my name", done = "I heard you finish" (see sounds.py; off or quiet by setting)."""
+    from . import sounds
+    sounds.play(event)
 
 
 def chime():

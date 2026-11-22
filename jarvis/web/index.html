@@ -4,8 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <title>Jarvis</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="/static/vendor/leaflet.css">
 <link rel="stylesheet" href="/static/vendor/xterm.css">
+<script type="importmap">{"imports":{"three":"/static/vendor/three/three.module.min.js"}}</script>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -15,32 +17,28 @@
 <canvas id="fx"></canvas>
 
 <div id="orbhit" aria-label="orb"></div>
+<div id="cedge"></div><button id="cstat" aria-label="Claude Code status" hidden></button>
 <div id="center">
   <div id="jword">JARVIS</div>
   <canvas id="rword" aria-label="ROSE"></canvas>
 </div>
 
 <!-- idle chrome: tiny status (bottom-left), one dim row of icons (bottom-centre), one tiny menu icon (top-right) -->
-<div id="status"><div id="stat">LOADING</div><div id="conn">CONNECTED</div></div>
+<div id="status"><div id="stat">LOADING</div><div id="conn">CONNECTED</div><button class="ico" id="i-mute" aria-label="mute: nothing listens for wake phrases"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 4L20 20"/></svg><span id="mutel">MIC LIVE</span></button><button id="pdot" hidden aria-label="desk presence camera is on: tap to pause"><i></i><span>CAM ON</span></button></div>
 <div id="cap"><div class="ai"></div></div>
 
-<button id="abort" class="tiny box" aria-label="back to the normal desktop (SUPER+ESCAPE)" title="Back to the normal desktop (SUPER+ESCAPE). Jarvis keeps running.">⎋ DESKTOP</button>
+<button id="abort" class="tiny box" aria-label="back to the normal desktop (SUPER+ESCAPE)" title="desktop (back to the normal desktop; SUPER+ESCAPE). Jarvis keeps running."><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="12" rx="1"/><path d="M8 20h8M12 16v4"/></svg></button>
 <button id="menubtn" class="tiny" aria-label="menu"><svg viewBox="0 0 24 24"><path d="M5 8h14M5 12h14M5 16h14"/></svg></button>
 <div id="menu">
   <button id="m-hide" class="tiny box">HIDE UI</button>
-  <button id="m-theme" class="tiny box">THEME</button>
+  <button id="m-theme" class="tiny box">PERSONA</button>
   <button id="m-orb" class="tiny box">TO ORB</button>
   <button id="m-win" class="tiny box">WINDOWS</button>
   <button id="m-term" class="tiny box">TERMINAL</button>
   <button id="m-claude" class="tiny box">CLAUDE</button>
   <button id="m-files" class="tiny box">FILES</button>
-  <button id="m-launch" class="tiny box">LAUNCHER</button>
-  <button id="m-scratch" class="tiny box">SCRATCHPAD</button>
-  <button id="m-clip" class="tiny box">CLIPBOARD</button>
-  <button id="m-act" class="tiny box">ACTIVITY</button>
-  <button id="m-hist" class="tiny box">HISTORY</button>
+  <button id="m-launch" class="tiny box">TOOLS</button>
   <button id="m-clear" class="tiny box">CLEAR VIEW</button>
-  <button id="m-src" class="tiny box">CAMERA SOURCE</button>
   <button id="m-set" class="tiny box">SETTINGS</button>
 </div>
 <div id="settings" role="dialog" aria-label="settings">
@@ -49,44 +47,71 @@
     <section class="sg open" data-sg="voice"><h3 class="sgh">VOICE</h3><div class="sgb">
       <div class="srow"><div class="sl"><b>Voice output</b><small>Speak answers aloud, or stay silent.</small></div><button id="s-voice" class="box">VOICE OUTPUT · ON</button></div>
       <div class="srow wide"><div class="sl"><b>Speaking speed</b><small>Slower or faster. Jarvis and Rose each keep their own.</small></div>
-        <div class="slw"><button id="s-spm" class="box sbtn" aria-label="slower">−</button><input type="range" id="s-speed" class="bigrange" min="70" max="160" step="5" value="100" aria-label="speaking speed"><button id="s-spp" class="box sbtn" aria-label="faster">+</button></div>
-        <div class="ticks pos"><span style="left:0">0.7×</span><span style="left:33.3%">1.0×</span><span style="left:100%">1.6×</span></div><div class="sval" id="s-speedl">1.0×</div></div>
+        <div class="slw"><button id="s-spm" class="box sbtn" aria-label="slower">−</button><input type="range" id="s-speed" class="bigrange" min="70" max="200" step="5" value="100" aria-label="speaking speed"><button id="s-spp" class="box sbtn" aria-label="faster">+</button></div>
+        <div class="ticks pos"><span style="left:0">0.7×</span><span style="left:23.1%">1.0×</span><span style="left:69.2%">1.6×</span><span style="left:100%">2.0×</span></div><div class="sval" id="s-speedl">1.0×</div></div>
       <div class="srow wide"><div class="sl"><b>Volume</b><small>The speakers' volume.</small></div>
         <div class="slw"><button id="s-vm" class="box sbtn" aria-label="quieter">−</button><input type="range" id="s-vol" class="bigrange" min="0" max="100" step="5" value="50" aria-label="volume"><button id="s-vp" class="box sbtn" aria-label="louder">+</button></div><div class="sval" id="s-voll">50%</div></div>
+      <div class="srow"><div class="sl"><b>Wake and finish sounds</b><small>A short chime in the persona's style the moment it hears its name, another when it has heard you, and a soft tone on errors.</small></div><button id="s-chime" class="box">SOUNDS · ON</button></div>
+      <div class="srow"><div class="sl"><b>Chime volume</b></div><div class="slw"><button id="s-cvm" class="box sbtn" aria-label="quieter">−</button><input type="range" id="s-cvol" class="bigrange" min="0" max="100" step="5" value="60" aria-label="chime volume"><button id="s-cvp" class="box sbtn" aria-label="louder">+</button></div><div class="sval" id="s-cvoll">60%</div></div>
+      <div class="srow"><div class="sl"><b>Feelings</b><small>The orb's colour and motion and the voice follow the mood of what is said (subtle). Off = always neutral.</small></div><button id="s-feel" class="box">FEELINGS · ON</button></div>
+      <div class="srow"><div class="sl"><b>Type box shortcut</b><small>A small text field near the pointer, over any app: type, Enter, and the answer comes back as a card or spoken. Alt+Space, Ctrl+Shift+Space, both, or off.</small></div><button id="s-tbox" class="box">ALT+SPACE</button></div>
+      <div class="srow"><div class="sl"><b>Show me how</b><small>Ask "how do I change the font size in this app?": I look at your screen once per step, point at the control with a glowing ring and say what to do. I never click or type for you. Say stop to end it.</small></div><button id="s-howto" class="box">SHOW ME HOW</button></div>
+      <div class="srow"><div class="sl"><b>Circle to ask</b><small>Draw a circle or rectangle on the screen with your finger or the mouse and ask about it, in either order. Also SUPER+SHIFT+C. Tap outside to cancel.</small></div><button id="s-circle" class="box">CIRCLE</button></div>
+      <div class="srow"><div class="sl"><b>Listening patience</b><small>How long I wait after you stop talking before I answer. Fast (default) is quickest; patient waits longer if you pause while you think.</small></div><button id="s-patience" class="box">PATIENCE · FAST</button></div>
+      <div class="srow"><div class="sl"><b>Orb position</b><small>Hold the small orb for half a second, then drag it anywhere. It is remembered and never goes off screen. Say "move to the top", "move left", "put the orb in the middle".</small></div><button id="s-orbreset" class="box">RESET POSITION</button></div>
+      <div class="srow"><div class="sl"><b>Keep the orb away from</b><small>A corner it will never sit in (for a cracked corner of the screen).</small></div><button id="s-orbavoid" class="box">TOP-RIGHT</button></div>
+      <div class="srow"><div class="sl"><b>Keep phone photos</b><small>Off (default): a photo sent from the iPhone shortcut is deleted as soon as I have answered. On: it is kept in the shots folder.</small></div><button id="s-keepph" class="box">KEEP PHOTOS · OFF</button></div>
+      <div class="srow"><div class="sl"><b>Automatic 3D</b><small>Off by default (it costs power). On: when you ask me to explain something physical or biological I may add a small 3D model. "Show me an atom in 3D" always works.</small></div><button id="s-auto3d" class="box">AUTO 3D · OFF</button></div>
+      <div class="srow"><div class="sl"><b>Send last 3D export</b><small>The newest picture or video from a model's PNG / VIDEO buttons goes to your Mac through the signed inbox.</small></div><button id="s-sendexp" class="box">SEND TO MY MAC</button></div>
+      <div class="srow"><div class="sl"><b>3D model cache</b><small>Real models you allowed are cached in ~/jarvis/cache/models (200 MB at most).</small></div><button id="s-clearmodels" class="box">CLEAR MODEL CACHE</button></div>
+      <div class="srow"><div class="sl"><b>Camera warnings</b><small>Off by default. On: a small quiet status line (never a popup, at most once every 10 minutes) when no camera is set up or the phone can't be reached.</small></div><button id="s-camwarn" class="box">CAMERA WARNINGS · OFF</button></div>
+      <div class="srow"><div class="sl"><b>Type box now</b></div><button id="s-tboxgo" class="box">OPEN TYPE BOX</button></div>
       <div class="srow"><div class="sl"><b>Sound test</b><small>A chime and a sentence, and which output was used.</small></div><button id="s-snd" class="box">SOUND TEST</button></div>
       <div class="srow"><div class="sl"><b>Follow-up question</b><small>Ask "anything else?" after helping. Off by default.</small></div><button id="s-follow" class="box">FOLLOW-UP · OFF</button></div>
       <button class="box sgreset" data-reset="voice">RESET THIS SECTION</button></div></section>
     <section class="sg" data-sg="display"><h3 class="sgh">DISPLAY</h3><div class="sgb">
       <div class="srow"><div class="sl"><b>Auto visuals</b><small>Show pictures and videos by themselves when the answer is about something.</small></div><button id="s-auto" class="box">AUTO VISUALS · ON</button></div>
       <div class="srow"><div class="sl"><b>Show what I heard</b><small>A small line with your words and which part answered, so a wrong guess is easy to spot.</small></div><button id="s-heard" class="box">SHOW WHAT I HEARD · ON</button></div>
+      <div class="srow"><div class="sl"><b>Start-up animation</b><small>The short power-on animation when Jarvis starts and when it wakes from the clock. Off = a quick fade.</small></div><button id="s-bootanim" class="box">START-UP ANIMATION · ON</button></div>
       <div class="srow"><div class="sl"><b>Large text</b><small>Bigger text and buttons everywhere.</small></div><button id="s-large" class="box">LARGE TEXT · OFF</button></div>
       <div class="srow"><div class="sl"><b>High contrast</b><small>Brighter lines and text for easier reading.</small></div><button id="s-hc" class="box">HIGH CONTRAST · OFF</button></div>
       <div class="srow"><div class="sl"><b>Lite mode</b><small>Fewer effects, lighter on the processor.</small></div><button id="s-lite" class="box">LITE MODE · OFF</button></div>
-      <div class="srow"><div class="sl"><b>Theme</b><small>Switch between Jarvis (blue) and Rose (red).</small></div><button id="s-theme" class="box">SWITCH THEME</button></div>
+      <div class="srow"><div class="sl"><b>Persona</b><small>Each one has its own name (wake word), voice, way of talking, colour and look. Alt+T cycles them. Say "switch to the coach". Add your own in ~/.config/jarvis/personas.json.</small></div><button id="s-theme" class="box">NEXT PERSONA</button></div><div class="srow"><div id="plist"></div></div>
       <div class="srow"><div class="sl"><b>Theme shortcut</b><small>Press this to switch theme. It never fires while you type.</small></div><button id="s-tkey" class="box">ALT+T · CHANGE</button></div>
       <div class="srow"><div class="sl"><b>Tidy cards</b><small>Close the small cards on the screen.</small></div><button id="s-tidy" class="box">TIDY CARDS</button></div>
-      <button class="box sgreset" data-reset="display">RESET THIS SECTION</button></div></section>
+      <h4 class="sgsub">MY LOCATION</h4>
+      <div class="srow"><div class="sl"><b>My location</b><small id="s-lochint">Type your address; it is shown on a map to confirm.</small></div><button id="s-loc" class="box">MY LOCATION</button></div>
+      <h4 class="sgsub">CLOCK</h4>
+      <div class="srow wide"><div class="sl"><b>Clock appears after</b><small>Quiet time before the clock screen. Any touch brings Jarvis back.</small></div>
+        <div class="slw"><button id="s-idm" class="box sbtn" aria-label="sooner">−</button><input type="range" id="s-idle" class="bigrange" min="0" max="7" step="1" value="2" aria-label="clock after"><button id="s-idp" class="box sbtn" aria-label="later">+</button></div>
+        <div class="ticks"><span>1 min</span><span>5 min</span><span>30 min</span><span>1 h</span><span>never</span></div><div class="sval" id="s-idlel">5 MIN</div></div>
+      <div class="srow"><div class="sl"><b>Hours</b><small>12 or 24 hour clock.</small></div><button id="s-c24" class="box">12 HOUR</button></div>
+      <div class="srow"><div class="sl"><b>Seconds</b><small>Show the ticking seconds.</small></div><button id="s-csec" class="box">SECONDS · ON</button></div>
+      <div class="srow"><div class="sl"><b>Show it now</b><small>Preview the clock screen.</small></div><button id="s-clk" class="box">SHOW CLOCK</button></div>
+      <h4 class="sgsub">REMINDERS</h4>
+      <div class="srow"><div class="sl"><b>Recurring reminders</b><small>Say: "remind me every weekday at 9 to stand up". Pause, edit or delete them on the card or by voice.</small></div><button id="s-rems" class="box">SHOW REMINDERS</button></div>
+      <div class="srow"><div class="sl"><b>Promises</b><small>Tell me what you will do ("I'll call mum tomorrow"); I nudge you when it is due and ask if it is done.</small></div><button id="s-proms" class="box">SHOW PROMISES</button></div>
+      <div class="srow"><div class="sl"><b>Auto-save promises</b><small>Off: I ask before saving each one. On: I save them without asking.</small></div><button id="s-autoprom" class="box">AUTO-SAVE · OFF</button></div>
+      <button class="box sgreset" data-reset="display">RESET THIS SECTION</button>
+      <button class="box sgreset" data-reset="screensaver">RESET THE CLOCK</button></div></section>
     <section class="sg" data-sg="wake"><h3 class="sgh">WAKE AND LISTENING</h3><div class="sgb">
       <div class="srow"><div class="sl"><b>Listening</b><small>Stop or start listening for "Hey Jarvis" / "Hey Rose".</small></div><button id="s-hf" class="box">TOGGLE LISTENING</button></div></div></section>
-    <section class="sg" data-sg="location"><h3 class="sgh">LOCATION</h3><div class="sgb">
-      <div class="srow"><div class="sl"><b>My location</b><small id="s-lochint">Type your address; it is shown on a map to confirm.</small></div><button id="s-loc" class="box">MY LOCATION</button></div></div></section>
-    <section class="sg" data-sg="camera"><h3 class="sgh">CAMERA</h3><div class="sgb">
-      <div class="srow"><div class="sl"><b>What "look" uses</b><small>Auto, screen, window, a USB webcam or your phone.</small></div><button id="s-src" class="box">CAMERA SOURCE</button></div>
-      <div class="srow"><div class="sl"><b>Phone camera</b><small>Use IP Webcam or DroidCam on your phone over Wi-Fi.</small></div><button id="s-pcam" class="box">PHONE CAMERA</button></div></div></section>
+    <section class="sg" data-sg="markets"><h3 class="sgh">MARKETS</h3><div class="sgb">
+      <div class="srow"><div class="sl"><b>Markets desk</b><small>A read-only research desk: quotes, charts that obey your voice, a watchlist and alerts. It never trades or gives advice. "Educational, not financial advice" is always shown and cannot be turned off.</small></div><button id="s-mktdesk" class="box">MARKETS DESK · ON</button></div>
+      <div class="srow"><div class="sl"><b>Open the desk</b></div><button id="s-mktopen" class="box">OPEN</button></div>
+      <div class="srow"><div class="sl"><b>Finnhub key (optional)</b><small>Free key from finnhub.io for quotes and news. Saved privately, never shown again. Without it the desk uses Yahoo's keyless feed, labelled as unofficial.</small></div><div class="slw"><input id="s-mktkey" type="password" autocomplete="off" placeholder="paste key" style="width:160px"><button id="s-mktkeysave" class="box">SAVE</button></div></div>
+      <div class="srow"><div class="sl"><b>SEC contact</b><small>SEC EDGAR asks for a contact in the User-Agent for public filings. Type one you are happy to share; nothing is sent until you ask for filings.</small></div><div class="slw"><input id="s-mktcontact" autocomplete="off" placeholder="name or contact" style="width:160px"><button id="s-mktcontactsave" class="box">SAVE</button></div></div>
+    </div></section>
     <section class="sg" data-sg="mac"><h3 class="sgh">MAC AND PHONE</h3><div class="sgb">
+      <div class="srow"><div class="sl"><b>Phone camera</b><small>Use IP Webcam or DroidCam on your phone over Wi-Fi.</small></div><button id="s-pcam" class="box">PHONE CAMERA</button></div>
       <div class="srow"><div class="sl"><b>Hey Jarvis from my iPhone</b><small>A Shortcut records 10 seconds and Jarvis answers on the phone. Home Wi-Fi only; off until you turn it on.</small></div><button id="s-iphone" class="box">IPHONE VOICE</button></div>
       <div class="srow"><div class="sl"><b>Pair my Mac</b><small>Send links and files to your Mac. Shows the steps and a code.</small></div><button id="s-mac" class="box">PAIR MY MAC</button></div></div></section>
     <section class="sg" data-sg="music"><h3 class="sgh">MUSIC</h3><div class="sgb">
       <div class="srow"><div class="sl"><b>Spotify</b><small>Step-by-step setup (needs Premium).</small></div><button id="s-spot" class="box">SET UP SPOTIFY</button></div></div></section>
-    <section class="sg" data-sg="screensaver"><h3 class="sgh">SCREENSAVER</h3><div class="sgb">
-      <div class="srow wide"><div class="sl"><b>Clock appears after</b><small>Quiet time before the clock screen. Any touch brings Jarvis back.</small></div>
-        <div class="slw"><button id="s-idm" class="box sbtn" aria-label="sooner">−</button><input type="range" id="s-idle" class="bigrange" min="0" max="6" step="1" value="3" aria-label="clock after"><button id="s-idp" class="box sbtn" aria-label="later">+</button></div>
-        <div class="ticks"><span>30 s</span><span>5 min</span><span>never</span></div><div class="sval" id="s-idlel">5 MIN</div></div>
-      <div class="srow"><div class="sl"><b>Hours</b><small>12 or 24 hour clock.</small></div><button id="s-c24" class="box">12 HOUR</button></div>
-      <div class="srow"><div class="sl"><b>Seconds</b><small>Show the ticking seconds.</small></div><button id="s-csec" class="box">SECONDS · ON</button></div>
-      <div class="srow"><div class="sl"><b>Show it now</b><small>Preview the clock screen.</small></div><button id="s-clk" class="box">SHOW CLOCK</button></div>
-      <button class="box sgreset" data-reset="screensaver">RESET THIS SECTION</button></div></section>
     <section class="sg" data-sg="advanced"><h3 class="sgh">ADVANCED</h3><div class="sgb">
+      <div class="srow"><div class="sl"><b>History</b><small>Everything said this session.</small></div><button id="s-hist" class="box">OPEN HISTORY</button></div>
+      <div class="srow"><div class="sl"><b>Activity</b><small>What Jarvis just did.</small></div><button id="s-act" class="box">WHAT HAPPENED</button></div>
+      <div class="srow"><div class="sl"><b>Camera source override</b><small>Normally automatic: the phone camera, then a USB webcam, then the screen. Only change this to force one.</small></div><button id="s-src" class="box">CAMERA SOURCE</button></div>
       <div class="srow"><div class="sl"><b>Machine warnings</b><small>A small chip if memory, heat or battery stays bad. Off = never.</small></div><button id="s-warn" class="box">MACHINE WARNINGS · ON</button></div>
       <div class="srow"><div class="sl"><b>Wake word in the terminal</b><small>Hands-free listening is muted while you type in the terminal. Turn on to keep it listening.</small></div><button id="s-twake" class="box">TERMINAL WAKE · OFF</button></div>
       <div class="srow"><div class="sl"><b>Stay out</b><small>Never take the screen back by itself when you are in another window.</small></div><button id="s-stay" class="box">STAY OUT · ON</button></div>
@@ -98,22 +123,21 @@
 <div id="look" aria-hidden="true">
   <div id="lkstage"><img id="lkimg" alt="" referrerpolicy="no-referrer"><div id="lkboxes"></div><div id="lkscan"></div></div>
   <div id="lkinfo"><span id="lksrc">LOOK</span></div><div id="lkcard"></div>
-  <div id="lkbar"><button id="lk-live" class="box">LIVE</button><button id="lk-freeze" class="box">FREEZE</button><button id="lk-mac" class="box">SEND TO MAC</button><button id="lk-close" class="box">CLOSE ✕</button></div>
+  <div id="lkvig"></div>
+  <button id="lkdots" aria-label="camera options" aria-expanded="false"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>
+  <div id="lkopts"><button id="lk-mac" class="box">SEND TO MAC</button><button id="lk-phone" class="box">SEND TO PHONE</button><button id="lk-hi" class="box">HIGHLIGHT</button><button id="lk-scan" class="box">SCAN</button><button id="lk-zoom" class="box">ZOOM 1×</button><button id="lk-close" class="box">CLOSE ✕</button></div>
+  <button id="lkagain" class="box">HIGHLIGHT AGAIN</button>
 </div>
 <div id="srch"><div class="h">SEARCHING<span class="dots"></span></div><ul></ul></div>
 <div id="cards"></div>
 <div id="hist"></div>
 
 <div id="dock">
-  <button class="ico" id="i-chat" aria-label="history"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg></button>
-  <i></i>
   <button class="ico" id="i-cam" aria-label="camera / look (hold)"><svg viewBox="0 0 24 24"><path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/></svg></button>
   <i></i>
   <button class="ico" id="i-map" aria-label="map"><svg viewBox="0 0 24 24"><path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2zM9 4v14M15 6v14"/></svg></button>
   <i></i>
   <button class="ico off" id="i-music" aria-label="music (not connected)"><svg viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="7" cy="18" r="2.5"/><circle cx="17" cy="16" r="2.5"/></svg></button>
-  <i></i>
-  <button class="ico" id="i-mute" aria-label="mute: nothing listens for wake phrases"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 4L20 20"/></svg></button>
 </div>
 
 <button id="vclose" aria-label="close view">CLOSE</button>
@@ -137,12 +161,13 @@
   </div>
 </div></div>
 <div id="hstat"></div>
-<div id="heard"></div><div id="offl"></div>
+<div id="startup"></div><div id="heard"></div><div id="offl"></div>
 <div id="preq"></div>
 <div id="toast"></div>
 <script src="/static/vendor/leaflet.js"></script>
 <script src="/static/vendor/xterm.js"></script>
 <script src="/static/vendor/addon-fit.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/boot.js"></script>
 </body>
 </html>

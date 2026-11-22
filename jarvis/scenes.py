@@ -8,7 +8,7 @@ import subprocess
 
 from . import config, opener
 
-PATH = config.ROOT / "data" / "scenes.json"
+PATH = config.DATA / "scenes.json"
 DEFAULTS = {
     "movie": [{"do": "volume", "set": 60}, {"do": "brightness", "set": 30}, {"do": "hide_ui", "on": True}],
     "focus": [{"do": "volume", "set": 20}, {"do": "brightness", "set": 75}, {"do": "hide_ui", "on": True}, {"do": "timer", "seconds": 1500, "label": "focus time is up"}],

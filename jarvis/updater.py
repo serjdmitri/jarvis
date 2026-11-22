@@ -50,7 +50,7 @@ def backup(keep=10):
     BACKUPS.mkdir(mode=0o700, exist_ok=True)
     path = BACKUPS / time.strftime("jarvis-%Y%m%d-%H%M%S.tar.gz")
     with tarfile.open(path, "w:gz") as t:
-        for base, arc in ((CFG, "config"), (ROOT / "data", "data"), (ROOT / "notes", "notes")):
+        for base, arc in ((CFG, "config"), (config.DATA, "data"), (ROOT / "notes", "notes")):
             if base.exists():
                 t.add(base, arcname=arc)
     os.chmod(path, 0o600)
@@ -75,11 +75,59 @@ def restore(path=None):
             if not (m.name.split("/")[0] in ("config", "data", "notes")) or ".." in m.name or m.name.startswith("/") or not (m.isfile() or m.isdir()):
                 return False, "That backup looks wrong, so I did not restore it."
         for m in t.getmembers():
-            dest = {"config": CFG, "data": ROOT / "data", "notes": ROOT / "notes"}[m.name.split("/")[0]]
+            dest = {"config": CFG, "data": config.DATA, "notes": ROOT / "notes"}[m.name.split("/")[0]]
             m.name = "/".join(m.name.split("/")[1:])
             if m.name:
                 t.extract(m, dest, filter="data")
     return True, f"Restored from {src.name}. Restart Jarvis to use it."
+
+
+def lint_names(pkg_dir):
+    """Undefined global names in every module (the kind of mistake that crashed start-up once: a module used but never imported). -> ["file: name", ...]"""
+    import ast
+    import builtins
+    bad = []
+    for f in sorted(Path(pkg_dir).glob("*.py")):
+        try:
+            t = ast.parse(f.read_text())
+        except SyntaxError as e:
+            bad.append(f"{f.name}: syntax error line {e.lineno}")
+            continue
+        defined = set(dir(builtins)) | {"__file__", "__name__"}
+        for n in ast.walk(t):
+            if isinstance(n, (ast.Import, ast.ImportFrom)):
+                for a in n.names:
+                    defined.add((a.asname or a.name).split(".")[0])
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                defined.add(n.name)
+            elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+                defined.add(n.id)
+            elif isinstance(n, ast.arg):
+                defined.add(n.arg)
+            elif isinstance(n, ast.ExceptHandler) and n.name:
+                defined.add(n.name)
+            elif isinstance(n, ast.MatchAs) and n.name:
+                defined.add(n.name)
+        used = {n.id for n in ast.walk(t) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+        bad += [f"{f.name}: {u}" for u in sorted(used - defined)]
+    return bad
+
+
+def preflight(root=None):
+    """Before ANY restart: compile, no undefined names, and the server module imports. -> (ok, plain reason)."""
+    root = Path(root or ROOT)
+    py = root / ".venv" / "bin" / "python"
+    py = str(py) if py.exists() else str(ROOT / ".venv" / "bin" / "python")
+    r = subprocess.run([py, "-m", "compileall", "-q", str(root / "jarvis")], capture_output=True, text=True, timeout=120)
+    if r.returncode:
+        return False, "does not compile: " + (r.stdout or r.stderr).strip().splitlines()[-1][:100]
+    bad = lint_names(root / "jarvis")
+    if bad:
+        return False, "undefined names: " + ", ".join(bad[:4])
+    r = subprocess.run([py, "-c", "import sys; sys.path.insert(0, '.'); import jarvis.webapp"], capture_output=True, text=True, timeout=60, cwd=str(root))
+    if r.returncode:
+        return False, "import failed: " + (r.stderr.strip().splitlines() or ["?"])[-1][:100]
+    return True, "ok"
 
 
 def health_ok():
@@ -116,7 +164,12 @@ def update():
 
 
 def restart_server():
+    """Restart only if the code passes preflight; otherwise keep the running server and say why. -> (ok, message)."""
+    ok, why = preflight()
+    if not ok:
+        return False, "Not restarting: the new code " + why
     subprocess.run(["pkill", "-f", "[.]venv/bin/python -m jarvis[.]webapp"], capture_output=True)       # the watchdog starts the new one
+    return True, "restarting"
 
 
 def parse_command(text):

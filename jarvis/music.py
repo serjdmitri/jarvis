@@ -30,6 +30,13 @@ def step(delta):
     return f"{r['title'][:70]}.", {"action": "open_url", "url": r["url"], "label": r["title"][:40]}
 
 
+def card():
+    """The now-playing card for what the YouTube queue is on (same card as Spotify's: title, channel, play / pause / next / volume)."""
+    r = STATE["queue"][STATE["i"]] if STATE["queue"] else {}
+    return {"type": "music", "gid": "music", "wide": 340, "title": "MUSIC", "name": r.get("title", "")[:80], "artist": r.get("channel", ""), "image": None, "playing": True, "progress": 0, "duration": 0,
+            "device": "YouTube Music", "volume": None, "yt": True}
+
+
 def now_playing():
     if not STATE["active"] or not STATE["queue"]:
         return "Nothing is playing."
@@ -48,6 +55,13 @@ def parse_command(text):
     m = re.fullmatch(r"(?:please )?(?:play|put on) (?:the )?(?:song|track|album) (.+)", low)
     if m:
         return {"kind": "play", "query": m.group(1).strip()}
+    m = re.fullmatch(r"(?:please )?(?:play|put on|start) (?:me )?(.{2,70}?)(?: on youtube(?: music)?)?", low)           # "play Taylor Swift", "play a song", "play something"
+    if m:
+        what = m.group(1).strip()
+        if re.fullmatch(r"(?:some music|music|the music|something|a song|any song|a random song|something good|my music|songs)", what):
+            return {"kind": "play", "query": "top songs playlist"}
+        if not re.match(r"(?:it|that|this|these|those|again|another|something else|the video|a video|video|videos|the (?:first|second|third|next|previous|last)|(?:the |a )?(?:game|games|chess|cards|football|soccer|basketball|tennis|golf|piano|guitar|chords|sound|sounds|noise|role|dead|along|back|out|up|fair|nice|with)\b|next|previous|number|\d+)", what):
+            return {"kind": "play", "query": what}
     if not STATE["active"]:
         return None
     if re.fullmatch(r"(?:please )?pause(?: the)?(?: music| song| video)?", low): return {"kind": "pause"}

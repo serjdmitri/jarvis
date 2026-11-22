@@ -10,18 +10,40 @@ if (POP) { document.documentElement.classList.add('popup'); window.__popReady = 
 const HQ = new URLSearchParams(location.search).has('hq');
 const TAU = Math.PI * 2, clamp = (v, a, b) => Math.min(b, Math.max(a, v)), D2R = Math.PI / 180;
 
-const S = { mode: 'loading', lvl: 0, tgt: 0, think: 0, spin: 0, spinV: .3, theme: 'jarvis', lite: false, muted: false,
+const S = { base: 'jarvis', mode: 'loading', lvl: 0, tgt: 0, think: 0, spin: 0, spinV: .3, theme: 'jarvis', lite: false, muted: false,
             source: 'auto', frameEma: 16, slow: 0, viewAmt: 0, viewing: false };
 const cv = $('#fx'), g = cv.getContext('2d'), bgc = $('#bgc'), bgx = bgc.getContext('2d');
 let W = 0, H = 0, dpr = 1, cx = 0, cy = 0, R = 90, box = 400, ox = 0, oy = 0, ringImg = null, specks = [], ws = null;   // ox,oy = ring centre inside the small canvas
-const ring = { x: 0, y: 0, s: 1 }, ringT = { x: 0, y: 0, s: 1 };       // current / target centre + scale (view mode shrinks it)
+let ringTw = null; const ring = { x: 0, y: 0, s: 1 }, ringT = { x: 0, y: 0, s: 1 };       // current / target centre + scale (view mode shrinks it)
 
 /* ---------------------------------------------------------------- theme / lite */
+let PERS = {};                                                                       // persona id -> {name, base, accent, word}, from the server
+const BASE_HUE = { jarvis: 217, rose: 346 };
+const hexHue = h => { const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(h || ''); if (!m) return null; const [r, g, b] = [1, 2, 3].map(i => parseInt(m[i], 16) / 255); const mx = Math.max(r, g, b), d = mx - Math.min(r, g, b); if (!d) return 0; const x = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; return (x * 60 + 360) % 360; };
+let roseWordFor = '';
+const MOOD = { calm: [0, .9, .9], happy: [14, 1.05, 1.05], excited: [26, 1.3, 1.35], thinking: [-14, .95, 1.1], sorry: [-22, .8, .75], serious: [-6, .85, .85], playful: [34, 1.15, 1.2] };   // hue shift (warmer = +), pulse, spin
+let moodT = [0, 1, 1];
+function applyLook() {                                                               // a persona = one of the two drawn looks (HUD "jarvis" or brush "rose") + its own hue and wordmark; moods nudge the hue a little more
+  const p = PERS[S.theme] || {}, base = p.base || (S.theme === 'rose' ? 'rose' : 'jarvis'), word = p.word || S.theme.toUpperCase();
+  const changed = S.base !== base; S.base = base; document.documentElement.dataset.theme = base;
+  const hh = hexHue(p.accent); let deg = hh == null ? 0 : hh - BASE_HUE[base]; if (deg > 180) deg -= 360; if (deg < -180) deg += 360; if (Math.abs(deg) < 6) deg = 0;      // Jarvis and Rose themselves need no filter
+  S.personaHue = deg; const tot = Math.round(deg + (S.moodHue || 0)), f = tot ? `hue-rotate(${tot}deg)` : '';
+  for (const id of ['fx', 'center']) { const e = $('#' + id); if (e && e.style.filter !== f) e.style.filter = f; }
+  document.documentElement.style.setProperty('--persona-acc', p.accent || '');
+  const jw = $('#jword'); if (jw && jw.textContent !== word) jw.textContent = word;
+  if (base === 'rose' && roseWordFor !== word) { roseWordFor = word; roseWord = makeRoseWord(word); const rw = $('#rword'); rw.width = roseWord.width; rw.height = roseWord.height; const c = rw.getContext('2d'); c.clearRect(0, 0, rw.width, rw.height); c.drawImage(roseWord, 0, 0); rw.setAttribute('aria-label', word); }
+  return changed;
+}
 function setTheme(t, save = true) {
-  S.theme = t; document.documentElement.dataset.theme = t; if (save) store('jv.theme', t);
-  const mt = $('#m-theme'); if (mt) mt.textContent = 'THEME · ' + t.toUpperCase();
-  build(); fitWords(); setRingTarget(false);
+  S.theme = t; if (save) store('jv.theme', t);
+  applyLook();
+  const mt = $('#m-theme'); if (mt) { mt.textContent = 'PERSONA'; mt.title = 'Persona: ' + ((PERS[t] || {}).name || t) + ' (Alt+T switches)'; }                // a fixed label: every persona lays the menu out identically
+  build(); fitWords(); setRingTarget(false); renderPersonaList();
   if (save) send({ t: 'persona', v: t });                                              // theme = voice + name + persona
+}
+function renderPersonaList() {
+  const box = $('#plist'); if (!box) return; box.textContent = '';
+  for (const p of Object.values(PERS)) { const b = document.createElement('button'); b.className = 'box pbtn' + (p.id === S.theme ? ' on' : ''); b.textContent = p.name.toUpperCase(); b.style.setProperty('--pc', p.accent); b.onclick = () => setTheme(p.id); box.appendChild(b); }
 }
 function setLite(on, save = true, why) {
   S.lite = on; document.documentElement.classList.toggle('lite', on); const sl = $('#s-lite'); if (sl) sl.textContent = 'LITE MODE · ' + (on ? 'ON' : 'OFF');
@@ -57,12 +79,23 @@ const anyFull = () => !DOCK && typeof cards !== 'undefined' && cards.some(c => c
 function setRingTarget(snap) {                                                       // target is always derived from state (never stored), so it cannot go stale
   const corner = !DOCK && !S.ghost && (S.viewing || anyFull());                               // ghost: always centred; look view / fullscreen card: small, bottom-right
   if (corner) { ringT.x = W * .87; ringT.y = H * .78; ringT.s = .4; } else { ringT.x = cx; ringT.y = cy; ringT.s = 1; }
-  if (snap) { Object.assign(ring, ringT); placeWord(); }
+  if (snap) { ringTw = null; Object.assign(ring, ringT); placeWord(); }
 }
-function placeWord() {
-  const c = $('#center').style; c.left = ring.x + 'px'; c.top = ring.y + 'px'; c.transform = `translate(-50%,-50%) scale(${ring.s})`;
+function placeWord() {                                                               // transform only (no layout): the orb glides on the compositor
+  const c = $('#center').style; if (c.left !== '0px') { c.left = '0px'; c.top = '0px'; } c.transform = `translate(${ring.x.toFixed(1)}px,${ring.y.toFixed(1)}px) translate(-50%,-50%) scale(${ring.s.toFixed(3)})`;
   cv.style.transform = `translate(${(ring.x - box / 2).toFixed(1)}px,${(ring.y - box / 2).toFixed(1)}px)`;
-  const hs = Math.max(72, R * 2.5 * ring.s), oh = $('#orbhit').style; oh.width = oh.height = hs + 'px'; oh.left = (ring.x - hs / 2) + 'px'; oh.top = (ring.y - hs / 2) + 'px';
+  const hs = Math.max(72, R * 2.5 * ring.s), oh = $('#orbhit').style; oh.width = oh.height = hs + 'px'; if (oh.left !== '0px') { oh.left = '0px'; oh.top = '0px'; } oh.transform = `translate(${(ring.x - hs / 2).toFixed(1)}px,${(ring.y - hs / 2).toFixed(1)}px)`;
+}
+const RING_GLIDE_MS = 450, easeInOut = p => p < .5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;      // the orb speeds up, then slows down (not a constant speed)
+function ringStep(now) {                                                             // returns true while the glide is running
+  const moved = Math.abs(ringT.x - ring.x) + Math.abs(ringT.y - ring.y) + Math.abs(ringT.s - ring.s) * 100;
+  if (!ringTw && moved > .05) ringTw = { t0: now, from: { x: ring.x, y: ring.y, s: ring.s }, to: { x: ringT.x, y: ringT.y, s: ringT.s } };
+  if (ringTw && (Math.abs(ringTw.to.x - ringT.x) + Math.abs(ringTw.to.y - ringT.y) + Math.abs(ringTw.to.s - ringT.s) * 100 > .5)) ringTw = { t0: now, from: { x: ring.x, y: ring.y, s: ring.s }, to: { x: ringT.x, y: ringT.y, s: ringT.s } };   // the target moved: glide on from here
+  if (!ringTw) return false;
+  const p = Math.min(1, (now - ringTw.t0) / RING_GLIDE_MS), e = easeInOut(p);
+  ring.x = ringTw.from.x + (ringTw.to.x - ringTw.from.x) * e; ring.y = ringTw.from.y + (ringTw.to.y - ringTw.from.y) * e; ring.s = ringTw.from.s + (ringTw.to.s - ringTw.from.s) * e; placeWord();
+  if (p >= 1) ringTw = null;
+  return true;
 }
 
 /* ---- ROSE art, prerendered once per size: tick ring, dial band, grunge brush wordmark ---- */
@@ -71,15 +104,16 @@ const mkCanvas = n => { const c = document.createElement('canvas'); c.width = c.
 const hash2 = (ix, iy) => { const v = Math.sin(ix * 127.1 + iy * 311.7) * 43758.5453; return v - Math.floor(v); };
 function vnoise(x, y) { const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy, u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy);
   return hash2(ix, iy) * (1 - u) * (1 - v) + hash2(ix + 1, iy) * u * (1 - v) + hash2(ix, iy + 1) * (1 - u) * v + hash2(ix + 1, iy + 1) * u * v; }
-function makeRoseWord() {                                                            // ragged dry-brush "ROSE": narrow slanted letters, trailing smear, eroded edges, scratches, ink splatter
+function makeRoseWord(word = 'ROSE') {                                                            // ragged dry-brush "ROSE": narrow slanted letters, trailing smear, eroded edges, scratches, ink splatter
   const w = 780, h = 330, c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d');
   let seed = 11; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  x.font = 'italic bold 270px "Nimbus Sans Narrow","Liberation Sans Narrow","Liberation Sans",sans-serif'; x.textAlign = 'center'; x.lineJoin = 'miter'; x.fillStyle = '#fff'; x.strokeStyle = '#fff';
+  const fs = Math.round(270 * Math.min(1, 4 / Math.max(4, word.length))), by = 165 + fs * .31;                      // longer names get a smaller brush so they fit the ring
+  x.font = `italic bold ${fs}px "Nimbus Sans Narrow","Liberation Sans Narrow","Liberation Sans",sans-serif`; x.textAlign = 'center'; x.lineJoin = 'miter'; x.fillStyle = '#fff'; x.strokeStyle = '#fff';
   try { x.letterSpacing = '-2px'; } catch (e) {}
   x.setTransform(1, 0, -.16, 1, 40, 0);                                              // extra slant
-  x.globalAlpha = .1; for (let k = 1; k <= 6; k++) { x.fillText('ROSE', w / 2 - k * 5, 248 + (rnd() - .5) * 4); }       // dry-brush streaks trailing to the left
+  x.globalAlpha = .1; for (let k = 1; k <= 6; k++) { x.fillText(word, w / 2 - k * 5, by + (rnd() - .5) * 4); }       // dry-brush streaks trailing to the left
   x.globalAlpha = 1;
-  for (let i = 0; i < 9; i++) { x.save(); x.translate(w / 2 + (rnd() - .5) * 10, 248 + (rnd() - .5) * 7); x.rotate((rnd() - .5) * .03); x.scale(1 + (rnd() - .5) * .05, 1 + (rnd() - .5) * .04); x.lineWidth = .4 + rnd() * 1.6; x.strokeText('ROSE', 0, 0); x.fillText('ROSE', 0, 0); x.restore(); }
+  for (let i = 0; i < 9; i++) { x.save(); x.translate(w / 2 + (rnd() - .5) * 10, by + (rnd() - .5) * 7); x.rotate((rnd() - .5) * .03); x.scale(1 + (rnd() - .5) * .05, 1 + (rnd() - .5) * .04); x.lineWidth = .4 + rnd() * 1.6; x.strokeText(word, 0, 0); x.fillText(word, 0, 0); x.restore(); }
   x.setTransform(1, 0, 0, 1, 0, 0);
   const img = x.getImageData(0, 0, w, h), d = img.data, A = new Float32Array(w * h), B = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++) A[i] = d[i * 4 + 3] / 255;
@@ -118,12 +152,12 @@ function buildRose() {
     for (let i = 0; i < 260; i++) { const a = i / 260 * TAU, L = i % 5 === 0 ? 10 : 5; x.beginPath(); x.moveTo(Math.cos(a) * R * 1.14, Math.sin(a) * R * 1.14); x.lineTo(Math.cos(a) * (R * 1.14 + L), Math.sin(a) * (R * 1.14 + L)); x.stroke(); }
     x.strokeStyle = 'rgba(255,70,110,.55)'; x.beginPath(); x.arc(0, 0, R * 1.13, 0, TAU); x.stroke(); x.beginPath(); x.arc(0, 0, R * 1.31, 0, TAU); x.stroke();
     dialImg = c; }
-  roseWord = makeRoseWord(); const rw = $('#rword'); rw.width = roseWord.width; rw.height = roseWord.height; rw.getContext('2d').drawImage(roseWord, 0, 0);
+  roseWordFor = (PERS[S.theme] || {}).word || 'ROSE'; roseWord = makeRoseWord(roseWordFor); const rw = $('#rword'); rw.width = roseWord.width; rw.height = roseWord.height; rw.getContext('2d').drawImage(roseWord, 0, 0);
 }
 function build() {
   if (!W) return;
   const x = bgx; x.clearRect(0, 0, W, H); ringImg = null;
-  if (S.theme === 'jarvis') {
+  if (S.base === 'jarvis') {
     const gr = x.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * .75);
     gr.addColorStop(0, '#141d48'); gr.addColorStop(.55, '#0b1030'); gr.addColorStop(1, '#05071a'); x.fillStyle = gr; x.fillRect(0, 0, W, H);
     x.strokeStyle = 'rgba(110,150,255,.09)'; x.lineWidth = 1; x.beginPath();               // faint grid
@@ -274,28 +308,36 @@ function tick(now) {
   S.dbg = (S.dbg || 33) + (dt * 1000 - (S.dbg || 33)) * .1;                          // debug: smoothed ms per drawn frame
   if (P.has('demo')) demoTick(now);
   if (S.conv) S.tgt = Math.max(S.tgt, .12 + .08 * Math.sin(now * .004));                 // conversation: the orb breathes gently = your turn
+  { const f = Math.min(1, dt * 2.5); S.mh = (S.mh || 0) + (moodT[0] - (S.mh || 0)) * f; S.mAmp = (S.mAmp || 1) + (moodT[1] - (S.mAmp || 1)) * f; S.mSpin = (S.mSpin || 1) + (moodT[2] - (S.mSpin || 1)) * f;
+    const mh = Math.round(S.mh); if (mh !== S.moodHue) { S.moodHue = mh; applyLook(); } }                  // the orb's hue, pulse and spin ease toward the mood of what is being said
   S.lvl += (S.tgt - S.lvl) * Math.min(1, dt * 18); S.tgt *= Math.pow(.02, dt);
   S.think += ((S.mode === 'thinking' ? 1 : 0) - S.think) * Math.min(1, dt * 4);
   S.viewAmt += ((S.viewing ? 1 : 0) - S.viewAmt) * Math.min(1, dt * 5);
   setRingTarget(false);                                                              // re-derive every frame
   const hf = anyFull(); if (hf !== S.hasfull) { S.hasfull = hf; document.documentElement.classList.toggle('hasfull', hf); }
-  const kk = Math.min(1, dt * 5), moved = Math.abs(ringT.x - ring.x) + Math.abs(ringT.y - ring.y) + Math.abs(ringT.s - ring.s) * 100;
-  if (moved > .05) { ring.x += (ringT.x - ring.x) * kk; ring.y += (ringT.y - ring.y) * kk; ring.s += (ringT.s - ring.s) * kk; placeWord(); }
+  ringStep(performance.now());
   const want = { thinking: 2.8, listening: .5 + S.lvl, speaking: .9 + S.lvl * 2 }[S.mode] || .25;
-  S.spinV += (want - S.spinV) * Math.min(1, dt * 3); S.spin += S.spinV * dt;
+  S.spinV += (want * (S.mSpin || 1) - S.spinV) * Math.min(1, dt * 3); S.spin += S.spinV * dt;
   for (const s of specks) { s.x = (s.x + s.vx * dt + box) % box; s.y = (s.y + s.vy * dt + box) % box; }
   applyView();
   if (S.viewing && !(typeof LK !== 'undefined' && LK.open) && S.mode === 'idle' && performance.now() - S.viewT > 15000) hideView();   // never leave the orb parked in the corner
-  if (S.theme === 'rose' && !S.lite) {                                               // brush wordmark tilts in 3D while thinking
+  if (S.base === 'rose' && !S.lite) {                                               // brush wordmark tilts in 3D while thinking
     const ry = S.think * Math.sin(S.spin * .8) * 55, rw = $('#rword').style; rw.transform = `perspective(500px) rotateY(${ry.toFixed(1)}deg) rotateZ(${(-3 - S.think * 6).toFixed(1)}deg)`; rw.opacity = (1 - S.think * .98).toFixed(2);
   }
-  const t1 = performance.now(); S.theme === 'jarvis' ? drawJarvis(now) : drawRose(now); S.drawMs = (S.drawMs || 0) + (performance.now() - t1 - (S.drawMs || 0)) * .1;
+  const t1 = performance.now(); S.base === 'jarvis' ? drawJarvis(now) : drawRose(now); S.drawMs = (S.drawMs || 0) + (performance.now() - t1 - (S.drawMs || 0)) * .1;
   if (P.has('fps') && (S.fc = (S.fc || 0) + 1) % 5 === 0) $('#stat').textContent = 'FPS ' + (1000 / S.dbg).toFixed(0) + (S.lite ? ' LITE ' : ' FULL ') + S.dbg.toFixed(0) + 'ms  draw ' + S.drawMs.toFixed(1) + 'ms';
 }
 
 /* ---------------------------------------------------------------- state / text / meter */
 const LABEL = { loading: 'LOADING MODELS', idle: 'READY', listening: 'LISTENING', thinking: 'THINKING', speaking: 'SPEAKING', error: 'ERROR', offline: 'OFFLINE' };
+let startT = 0, startTick = 0;
+function startupChip(on) {                                                          // "STARTING UP..." with a running count while the server is away or loading its speech models; the orb keeps animating
+  const e = $('#startup'); if (!e) return;
+  if (on && !startT) { startT = performance.now(); startTick = setInterval(() => { const n = Math.round((performance.now() - startT) / 1000); e.textContent = `STARTING UP · ${n} S · loading the speech models, about a minute`; }, 1000); e.style.display = 'block'; e.textContent = 'STARTING UP · loading the speech models, about a minute'; }
+  else if (!on && startT) { clearInterval(startTick); startT = 0; e.style.display = 'none'; }
+}
 function setMode(m, detail) {
+  startupChip(m === 'offline' || m === 'loading');
   if (m !== 'idle' && idleOn && performance.now() - idleSince > 2500) idleShow(false);                                          // a wake word, a voice or an answer dismisses the clock at once
   S.mode = m; S.detail = detail || ''; S.conv = m === 'listening' && S.detail === 'conversation'; if (S.viewing) S.viewT = performance.now(); const s = $('#stat'); s.textContent = (m === 'listening' && /^manual/.test(S.detail)) ? 'MANUAL PRESS · MUTED' : S.conv ? 'YOUR TURN' : (LABEL[m] || m.toUpperCase()); s.classList.toggle('on', m !== 'idle');
   document.documentElement.classList.toggle('idle', m === 'idle'); showMute();
@@ -322,6 +364,7 @@ function slotPos(i, el) {
   const [fx, fy] = SLOTS[i % SLOTS.length], w = el.offsetWidth, h = el.offsetHeight, m = Math.min(W, H) * .05;
   return [clamp(fx * W - w / 2, m, W - w - m), clamp(fy * H - h / 2, 100, H - h - 110)];   // clear of the chips (top) and dock (bottom)
 }
+function saveWidget(c) { if (!c.wkey || c.isFull) return; try { localStorage.setItem(c.wkey, JSON.stringify({ x: c.el.offsetLeft, y: c.el.offsetTop, w: c.el.offsetWidth, h: c.el.offsetHeight })); } catch (_) {} }
 function placeCard(el, i) { const [x, y] = slotPos(i, el); el.style.left = x + 'px'; el.style.top = y + 'px'; }
 function expandCard(c) {                                                             // card goes full screen; the orb shrinks to the bottom-right corner (derived from state)
   cards.forEach(o => o !== c && o.isFull && collapseCard(o));
@@ -338,7 +381,7 @@ function updatePager() {
   cards.forEach(c => { const on = c.isFull && live.length > 1; c.pg.classList.toggle('on', on); if (on) c.pg.querySelector('i').textContent = (idx + 1) + '/' + live.length; });
 }
 function flip(c, d) { const live = batch.filter(x => cards.includes(x)), i = live.indexOf(c); if (i < 0) return; expandCard(live[(i + d + live.length) % live.length]); }
-function closeCard(c) { if (c.live) c.live.src = ''; c.isFull = false; c.el.classList.remove('in'); c.el.classList.add('out'); setTimeout(() => { c.el.remove(); c.map && c.map.remove(); }, 380); const i = cards.indexOf(c); if (i >= 0) cards.splice(i, 1); }
+function closeCard(c) { sfx('close'); if (c.live) c.live.src = ''; if (c.onClose) { try { c.onClose(); } catch (_) {} } c.isFull = false; c.el.classList.remove('in'); c.el.classList.add('out'); setTimeout(() => { c.el.remove(); c.map && c.map.remove(); }, 380); const i = cards.indexOf(c); if (i >= 0) cards.splice(i, 1); }
 function clearView() { [...cards].forEach(closeCard); hideView(); updatePager(); }
 function tidy() { cards.forEach((c, i) => { c.moved = false; placeCard(c.el, i); }); }
 
@@ -371,7 +414,7 @@ function guideBuild(c, body, card) {
       const box = document.createElement('div'); box.className = 'gstep' + (st.optional ? ' opt' : '');
       const h = document.createElement('div'); h.className = 'gtxt'; h.textContent = (paged ? `STEP ${i + 1} OF ${steps.length}  ` : st.n + '.  ') + (st.optional ? '(optional) ' : '') + st.text; box.append(h);
       if (st.cmd) { const pre = document.createElement('pre'); pre.className = 'gcmd'; pre.textContent = st.cmd; const cp = document.createElement('button'); cp.className = 'tiny box gcopy'; cp.textContent = 'COPY';
-        cp.onclick = () => { try { navigator.clipboard.writeText(st.cmd); cp.textContent = 'COPIED'; } catch (_) { cp.textContent = 'SELECT + COPY'; } }; box.append(pre, cp); }
+        cp.onclick = () => { copyText(st.cmd).then(ok => { cp.textContent = ok ? 'COPIED' : 'SELECT + COPY'; }); }; box.append(pre, cp); }
       if (st.showCode && card.code) { const cd = document.createElement('div'); cd.className = 'gcode'; cd.textContent = card.code; box.append(cd); }
       if (st.copy) { const row = document.createElement('div'); row.className = 'gcmd'; row.textContent = st.copy.mask; const cb = document.createElement('button'); cb.className = 'tiny box gcopy'; cb.textContent = st.copy.label;
         cb.onclick = () => { send({ t: st.copy.action }); cb.textContent = 'COPIED'; }; box.append(row, cb); }
@@ -398,7 +441,7 @@ function guideBuild(c, body, card) {
 
 /* ---- preferences: the server owns them (settings.json); the page shows them and sends changes ---- */
 const PREFS = { speed: 1, volume: 50, auto_visuals: true, stay_out: true, idle_minutes: 5, clock24: false, clock_seconds: true, home: '' };
-const IDLE_CHOICES = [0.5, 1, 2, 5, 10, 30, 0], idleLabel = m => m === 0 ? 'NEVER' : m < 1 ? '30 SEC' : m + ' MIN';
+const IDLE_CHOICES = [1, 2, 5, 10, 15, 30, 60, 0], idleLabel = m => m === 0 ? 'NEVER' : m === 60 ? '1 HOUR' : m + ' MIN';
 const fmtX = v => v.toFixed(2).replace(/0$/, '') + '×';
 function showPrefs() {
   const sp = $('#s-speed'); if (!sp) return;
@@ -406,6 +449,16 @@ function showPrefs() {
   const vl = $('#s-vol'); if (document.activeElement !== vl) vl.value = PREFS.volume; $('#s-voll').textContent = vl.value + '%';
   $('#s-heard').textContent = 'SHOW WHAT I HEARD · ' + (PREFS.show_heard === false ? 'OFF' : 'ON'); $('#s-large').textContent = 'LARGE TEXT · ' + (PREFS.large_text ? 'ON' : 'OFF'); $('#s-hc').textContent = 'HIGH CONTRAST · ' + (PREFS.high_contrast ? 'ON' : 'OFF');
   document.documentElement.classList.toggle('large', !!PREFS.large_text); document.documentElement.classList.toggle('hc', !!PREFS.high_contrast);
+  $('#s-chime').textContent = 'SOUNDS · ' + (PREFS.chimes === false ? 'OFF' : 'ON'); $('#s-feel').textContent = 'FEELINGS · ' + (PREFS.feelings === false ? 'OFF' : 'ON'); { const cv = $('#s-cvol'); if (document.activeElement !== cv) cv.value = PREFS.chime_volume ?? 60; $('#s-cvoll').textContent = cv.value + '%'; }
+  $('#s-autoprom').textContent = 'AUTO-SAVE · ' + (PREFS.auto_promises ? 'ON' : 'OFF');
+  $('#s-tbox').textContent = { alt: 'ALT+SPACE', ctrl: 'CTRL+SHIFT+SPACE', both: 'BOTH SHORTCUTS', off: 'OFF' }[PREFS.typebox_key || 'alt'];
+  $('#s-bootanim').textContent = 'START-UP ANIMATION · ' + (PREFS.boot_anim === false ? 'OFF' : 'ON');
+  $('#s-patience').textContent = 'PATIENCE · ' + (PREFS.listen_patience || 'fast').toUpperCase();
+  $('#s-orbavoid').textContent = (PREFS.orb_avoid || 'top-right').toUpperCase().replace('NONE', 'NO CORNER');
+  $('#s-keepph').textContent = 'KEEP PHOTOS · ' + (PREFS.keep_phone_photos ? 'ON' : 'OFF');
+  $('#s-auto3d').textContent = 'AUTO 3D · ' + (PREFS.auto_3d ? 'ON' : 'OFF');
+  $('#s-mktdesk').textContent = 'MARKETS DESK · ' + (PREFS.markets_desk === false ? 'OFF' : 'ON');
+  $('#s-camwarn').textContent = 'CAMERA WARNINGS · ' + (PREFS.camera_warnings ? 'ON' : 'OFF');
   $('#s-twake').textContent = 'TERMINAL WAKE · ' + (PREFS.term_wake ? 'ON' : 'OFF');
   $('#s-warn').textContent = 'MACHINE WARNINGS · ' + (PREFS.machine_warnings === false ? 'OFF' : 'ON');
   $('#s-auto').textContent = 'AUTO VISUALS · ' + (PREFS.auto_visuals ? 'ON' : 'OFF'); $('#s-stay').textContent = 'STAY OUT · ' + (PREFS.stay_out ? 'ON' : 'OFF');
@@ -418,11 +471,25 @@ const setPref = (key, value) => { PREFS[key] = value; showPrefs(); send({ t: 'se
 /* sliders: pointer-events on the control itself (the old one sat under a label's invisible touch-extender), a big thumb, − and + buttons, and a send only when you let go */
 const slider = (id, minus, plus, step, fmt, commit) => { const el = $(id); el.addEventListener('pointerdown', e => e.stopPropagation()); el.addEventListener('input', () => fmt(+el.value)); el.addEventListener('change', () => commit(+el.value));
   const nudge = d => { el.value = Math.min(+el.max, Math.max(+el.min, +el.value + d * step)); fmt(+el.value); commit(+el.value); }; $(minus).onclick = () => nudge(-1); $(plus).onclick = () => nudge(1); };
-slider('#s-speed', '#s-spm', '#s-spp', 5, v => { $('#s-speedl').textContent = fmtX(v / 100); }, v => setPref('speed', v / 100));
+slider('#s-speed', '#s-spm', '#s-spp', 5, v => { $('#s-speedl').textContent = fmtX(v / 100); }, v => { setPref('speed', v / 100); if (v > 180) toast('ABOVE 1.8× IT BARELY GETS FASTER AND CAN SOUND RUSHED: 1.6× IS THE SWEET SPOT'); });
+slider('#s-cvol', '#s-cvm', '#s-cvp', 5, v => { $('#s-cvoll').textContent = v + '%'; }, v => setPref('chime_volume', v));
+$('#s-rems').onclick = () => { closeSettings(); ask('what are my reminders'); }; $('#s-proms').onclick = () => { closeSettings(); ask('what did I promise'); }; $('#s-autoprom').onclick = () => setPref('auto_promises', !PREFS.auto_promises);
+$('#s-tbox').onclick = () => { const o = ['alt', 'ctrl', 'both', 'off']; setPref('typebox_key', o[(o.indexOf(PREFS.typebox_key || 'alt') + 1) % 4]); }; $('#s-tboxgo').onclick = () => { closeSettings(); send({ t: 'action', name: 'typebox_open', payload: {} }); };
+$('#s-howto').onclick = () => { closeSettings(); send({ t: 'action', name: 'howto_ask', payload: {} }); }; $('#s-circle').onclick = () => { closeSettings(); send({ t: 'action', name: 'circle_open', payload: {} }); };
+$('#s-bootanim').onclick = () => setPref('boot_anim', PREFS.boot_anim === false);
+$('#s-patience').onclick = () => { const o = ['fast', 'normal', 'patient']; setPref('listen_patience', o[(o.indexOf(PREFS.listen_patience || 'fast') + 1) % 3]); };
+$('#s-orbreset').onclick = () => send({ t: 'action', name: 'orb_reset', payload: {} }); $('#s-orbavoid').onclick = () => { const o = ['top-right', 'top-left', 'bottom-left', 'bottom-right', 'none']; setPref('orb_avoid', o[(o.indexOf(PREFS.orb_avoid || 'top-right') + 1) % 5]); };
+$('#s-keepph').onclick = () => setPref('keep_phone_photos', !PREFS.keep_phone_photos);
+$('#s-auto3d').onclick = () => setPref('auto_3d', !PREFS.auto_3d); $('#s-sendexp').onclick = () => send({ t: 'action', name: 'holo_send_export', payload: {} }); $('#s-clearmodels').onclick = () => send({ t: 'action', name: 'models_clear', payload: {} });
+$('#s-mktdesk').onclick = () => setPref('markets_desk', PREFS.markets_desk === false); $('#s-mktopen').onclick = () => { closeSettings(); send({ t: 'action', name: 'mkt_open', payload: {} }); };
+$('#s-mktkeysave').onclick = () => { const i = $('#s-mktkey'); const v = i.value.trim(); i.value = ''; if (v) send({ t: 'action', name: 'mkt_key', payload: { value: v } }); toast(v ? 'KEY SENT' : 'PASTE A KEY FIRST'); };
+$('#s-mktcontactsave').onclick = () => { const i = $('#s-mktcontact'); send({ t: 'action', name: 'mkt_contact', payload: { value: i.value } }); toast('SAVED'); };
+$('#s-camwarn').onclick = () => setPref('camera_warnings', !PREFS.camera_warnings);
+$('#s-chime').onclick = () => setPref('chimes', PREFS.chimes === false); $('#s-feel').onclick = () => setPref('feelings', PREFS.feelings === false);
 slider('#s-vol', '#s-vm', '#s-vp', 5, v => { $('#s-voll').textContent = v + '%'; }, v => setPref('volume', v));
 slider('#s-idle', '#s-idm', '#s-idp', 1, v => { $('#s-idlel').textContent = idleLabel(IDLE_CHOICES[v]); }, v => setPref('idle_minutes', IDLE_CHOICES[v]));
 $('#s-heard').onclick = () => setPref('show_heard', PREFS.show_heard === false); $('#s-large').onclick = () => setPref('large_text', !PREFS.large_text); $('#s-hc').onclick = () => setPref('high_contrast', !PREFS.high_contrast);
-$('#m-act').onclick = () => { openMenu(false); ask('what happened'); };
+$('#s-act').onclick = () => { closeSettings(); ask('what happened'); };
 $('#s-warn').onclick = () => setPref('machine_warnings', PREFS.machine_warnings === false);
 $('#s-auto').onclick = () => setPref('auto_visuals', !PREFS.auto_visuals); $('#s-stay').onclick = () => setPref('stay_out', !PREFS.stay_out);
 $('#s-c24').onclick = () => setPref('clock24', !PREFS.clock24); $('#s-csec').onclick = () => setPref('clock_seconds', !PREFS.clock_seconds);
@@ -440,14 +507,156 @@ document.querySelectorAll('#settings .sgreset').forEach(b => b.onclick = () => {
 const ask = text => send({ t: 'ask', text });                                       // a few fixed requests from buttons (the server only accepts an allowlist)
 $('#s-iphone').onclick = () => { closeSettings(); ask('set up the iphone voice'); };
 $('#s-mac').onclick = () => { closeSettings(); ask('pair my Mac'); }; $('#s-spot').onclick = () => { closeSettings(); ask('set up Spotify'); }; $('#s-clk').onclick = () => { closeSettings(); ask('show the clock now'); };
-$('#s-theme').onclick = () => setTheme(S.theme === 'jarvis' ? 'rose' : 'jarvis');
+const nextPersona = () => { const ids = Object.keys(PERS); if (ids.length < 2) return S.theme === 'jarvis' ? 'rose' : 'jarvis'; return ids[(ids.indexOf(S.theme) + 1) % ids.length]; };
+$('#s-theme').onclick = () => setTheme(nextPersona());
 $('#s-hf').onclick = () => $('#i-mute').click();
-$('#s-src').onclick = () => $('#m-src').click();
+$('#s-src').onclick = () => setSource(SOURCES[(SOURCES.indexOf(S.source) + 1) % SOURCES.length]);
 $('#s-loc').onclick = () => { closeSettings(); send({ t: 'locsetup' }); };
 $('#s-pcam').onclick = () => { closeSettings(); send({ t: 'phonecam_setup' }); };
 $('#s-snd').onclick = () => { send({ t: 'soundtest' }); };
 $('#settings').addEventListener('pointerdown', e => e.stopPropagation());              // nothing underneath (press-to-talk, the menu) may take a press made inside the panel
 
+/* ---- explain cards: a small drawing beside the answer (diagram, timeline, labelled picture, spinning 3D shape) with the key sentence underlined; plain text if drawing fails ---- */
+const SVGNS = 'http://www.w3.org/2000/svg';
+const svgEl = (n, a = {}, t) => { const e = document.createElementNS(SVGNS, n); for (const k in a) e.setAttribute(k, a[k]); if (t != null) e.textContent = t; return e; };
+function explainDiagram(card) {
+  const nodes = card.nodes || [], edges = card.edges || []; if (!nodes.length) throw new Error('no nodes');
+  const level = {}; nodes.forEach(n => level[n.id] = 0);
+  for (let i = 0; i < nodes.length; i++) edges.forEach(([a, b]) => { if (level[b] <= level[a] && level[a] + 1 < nodes.length) level[b] = level[a] + 1; });         // layers from the arrows
+  const layers = []; nodes.forEach(n => (layers[level[n.id]] = layers[level[n.id]] || []).push(n));
+  const W = 560, rowH = 74, H = Math.max(1, layers.filter(Boolean).length) * rowH + 10, svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'xsvg' }), pos = {};
+  { const df = svgEl('defs'), mk = svgEl('marker', { id: 'ah', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto' }); mk.append(svgEl('path', { d: 'M0 0L10 5L0 10z', fill: 'currentColor' })); df.append(mk); svg.append(df); }
+  layers.filter(Boolean).forEach((row, r) => row.forEach((n, i) => { const bw = Math.min(150, (W - 20) / row.length - 14), cx = (i + .5) * W / row.length; pos[n.id] = { x: cx, y: r * rowH + 36, w: bw }; }));
+  edges.forEach(([a, b, lab]) => { const p = pos[a], q = pos[b]; if (!p || !q) return; const dy = q.y - p.y, x1 = p.x, y1 = p.y + 18, x2 = q.x, y2 = q.y - 20 + (dy ? 0 : 20);
+    svg.append(svgEl('line', { x1, y1, x2, y2, class: 'xedge', 'marker-end': 'url(#ah)' })); if (lab) svg.append(svgEl('text', { x: (x1 + x2) / 2 + 4, y: (y1 + y2) / 2 + 3, class: 'xlab' }, lab)); });
+  nodes.forEach(n => { const p = pos[n.id]; if (!p) return; svg.append(svgEl('rect', { x: p.x - p.w / 2, y: p.y - 18, width: p.w, height: 36, rx: 6, class: 'xnode' })); svg.append(svgEl('text', { x: p.x, y: p.y + 4, 'text-anchor': 'middle', class: 'xtxt' }, n.label.length > 22 ? n.label.slice(0, 21) + '…' : n.label)); });
+  return svg;
+}
+function explainTimeline(card) {
+  const ev = card.events || []; if (!ev.length) throw new Error('no events'); const W = 560, H = 150, svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'xsvg' });
+  svg.append(svgEl('line', { x1: 20, y1: 70, x2: W - 20, y2: 70, class: 'xedge' }));
+  ev.forEach((e, i) => { const x = 80 + i * (W - 160) / Math.max(1, ev.length - 1), up = i % 2 === 0; svg.append(svgEl('circle', { cx: x, cy: 70, r: 6, class: 'xdot' })); svg.append(svgEl('line', { x1: x, y1: 70, x2: x, y2: up ? 48 : 92, class: 'xedge' }));
+    svg.append(svgEl('text', { x, y: up ? 40 : 108, 'text-anchor': 'middle', class: 'xlab xbold' }, e.when)); const words = e.text.split(' '), lines = []; let cur = ''; words.forEach(w => { if ((cur + ' ' + w).length > 15) { lines.push(cur); cur = w; } else cur = (cur + ' ' + w).trim(); }); lines.push(cur);
+    lines.slice(0, 3).forEach((ln, k) => svg.append(svgEl('text', { x, y: (up ? 16 : 122) + k * 12 - (up ? (lines.length > 1 ? 4 : 0) : 0), 'text-anchor': 'middle', class: 'xtxt xsmall' }, ln))); });
+  return svg;
+}
+function explainLabelled(card) {
+  if (!card.src) throw new Error('no picture'); const box = document.createElement('div'); box.className = 'xpic'; const im = new Image(); im.referrerPolicy = 'no-referrer'; im.src = card.src; box.append(im);
+  const leg = document.createElement('ol'); leg.className = 'xleg'; (card.labels || []).forEach((l, i) => { const pin = document.createElement('span'); pin.className = 'xpin'; pin.textContent = i + 1; pin.style.left = l.x * 100 + '%'; pin.style.top = l.y * 100 + '%'; box.append(pin); const li = document.createElement('li'); li.textContent = l.text; leg.append(li); });
+  const wrap = document.createElement('div'); wrap.className = 'xwrap'; wrap.append(box, leg); return wrap;
+}
+function explainSpin(card, c) {                                                       // wireframe shape on one small canvas, 30 fps at most, stops when the card is closed or hidden
+  const cv = document.createElement('canvas'); cv.className = 'xcv'; cv.width = 300; cv.height = 220; const g2 = cv.getContext('2d'); let a = 0, last = 0, alive = true;
+  const V = { cube: [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]], pyramid: [[-1, 1, -1], [1, 1, -1], [1, 1, 1], [-1, 1, 1], [0, -1.2, 0]] };
+  const E = { cube: [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]], pyramid: [[0, 1], [1, 2], [2, 3], [3, 0], [0, 4], [1, 4], [2, 4], [3, 4]] };
+  const shape = card.shape || 'cube', pts = [], segs = [];
+  if (shape === 'sphere' || shape === 'ring') { const R2 = shape === 'ring' ? 2 : 1; for (let i = 0; i < (shape === 'ring' ? 2 : 3); i++) { const base = pts.length; for (let k = 0; k < 36; k++) { const t = k / 36 * Math.PI * 2, r = shape === 'ring' ? [1.3, .7][i] : 1.2; const p = [Math.cos(t) * r, Math.sin(t) * r, shape === 'ring' ? 0 : 0];
+        pts.push(shape === 'sphere' ? (i === 0 ? [p[0], p[1], 0] : i === 1 ? [p[0], 0, p[1]] : [0, p[0], p[1]]) : [p[0], p[1] * .5, 0]); segs.push([base + k, base + (k + 1) % 36]); } } }
+  else { V[shape].forEach(v => pts.push(v)); E[shape].forEach(e => segs.push(e)); }
+  const col = () => getComputedStyle(document.documentElement).getPropertyValue('--card').trim() || '#9cc2ff';
+  function frame(t) { if (!alive || !cv.isConnected) return; requestAnimationFrame(frame); if (t - last < 33 || document.hidden) return; last = t; a += .02;
+    const ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(a * .6), sb = Math.sin(a * .6); g2.clearRect(0, 0, 300, 220); g2.strokeStyle = col(); g2.lineWidth = 1.6; g2.shadowColor = col(); g2.shadowBlur = 6;
+    const P = pts.map(([x, y, z]) => { let x1 = x * ca + z * sa, z1 = -x * sa + z * ca, y1 = y * cb - z1 * sb, z2 = y * sb + z1 * cb, f = 140 / (4 + z2); return [150 + x1 * f * .9, 110 + y1 * f * .9]; });
+    g2.beginPath(); segs.forEach(([i, j]) => { g2.moveTo(...P[i]); g2.lineTo(...P[j]); }); g2.stroke(); }
+  requestAnimationFrame(frame); const prev = c.onClose; c.onClose = () => { alive = false; if (prev) prev(); };
+  const w = document.createElement('div'); w.className = 'xwrap'; w.append(cv); if (card.caption) { const cp = document.createElement('div'); cp.className = 'xcap'; cp.textContent = card.caption; w.append(cp); } return w;
+}
+function explainBuild(c, body, card) {
+  body.classList.add('xplain');
+  try {
+    const k = card.kind || 'diagram', fig = k === 'timeline' ? explainTimeline(card) : k === 'labelled' ? explainLabelled(card) : k === 'spin3d' ? explainSpin(card, c) : k === 'draw' ? explainDraw(card, c) : explainDiagram(card); body.append(fig);
+  } catch (e) { const fb = document.createElement('div'); fb.className = 'xfb'; fb.textContent = card.text || card.key || card.title || ''; body.append(fb); }      // plain-text fallback
+  if (card.key) { const key = document.createElement('div'); key.className = 'xkey'; const u = document.createElement('u'); u.textContent = card.key; key.append(u); body.append(key); }
+  if (card.text && !body.querySelector('.xfb')) { const tx = document.createElement('div'); tx.className = 'xtext'; tx.textContent = card.text; body.append(tx); }
+}
+const MKT = { ctl: null, card: null, pending: [] };
+function mktBuild(c, body, card) {                                                 // the Markets Desk card: read-only, loaded on demand like the 3D card
+  body.classList.add('media'); body.textContent = 'Opening the desk…';
+  import('/static/markets.js').then(m => { if (!c.el.isConnected) return; body.textContent = ''; const ctl = m.mount(body, card, { send, toast }); MKT.ctl = ctl; MKT.card = c; const prev = c.onClose;
+    c.onClose = () => { try { ctl.dispose(); } catch (_) {} if (MKT.card === c) { MKT.ctl = null; MKT.card = null; send({ t: 'mkt_closed' }); } if (prev) prev(); };
+    if (MKT.pending.length) { ctl.apply(MKT.pending); MKT.pending = []; } }).catch(() => { body.textContent = 'The desk could not start on this screen.'; });
+}
+const HOLO = { ctl: null, card: null };
+function holoBuild(c, body, card) {                                                // the 3D card: the viewer module loads only now (three.js is not part of the page until a model opens)
+  body.classList.add('media'); body.textContent = 'Building the model…';
+  const api = { send, toast, look: () => ({ accent: (PERS[S.theme] || {}).accent || (S.base === 'rose' ? '#ff2d55' : '#3d8bff'), lite: S.lite, base: S.base }) };
+  import('/static/holo.js').then(m => { if (!c.el.isConnected) return; body.textContent = ''; const ctl = m.mount(body, card, api); HOLO.ctl = ctl; HOLO.card = c; const prev = c.onClose; c.onClose = () => { try { ctl.dispose(); } catch (_) {} if (HOLO.card === c) { HOLO.ctl = null; HOLO.card = null; send({ t: 'holo_closed' }); } if (prev) prev(); }; send({ t: 'holo_open', title: card.title, parts: ctl.parts ? ctl.parts() : [] }); })
+    .catch(() => { body.textContent = 'The 3D viewer could not start on this screen.'; });
+}
+const DRAWS = new Set();                                                           // open animated drawings: revealed one spoken sentence at a time (a slow timer is the fallback when nothing is spoken)
+function explainDraw(card, c) {
+  const els = card.elements || []; if (!els.length) throw new Error('empty'); const W = 560, H = 380, svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'xsvg xdraw' });
+  const dm = svgEl('defs'), mk = svgEl('marker', { id: 'dah', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto' }); mk.append(svgEl('path', { d: 'M0 0L10 5L0 10z', fill: 'currentColor' })); dm.append(mk); svg.append(dm);
+  const X = v => v * W, Y = v => v * H, nodes = [];
+  const lab = (x, y, t, a = 'middle') => svgEl('text', { x, y, 'text-anchor': a, class: 'xtxt' }, t);
+  els.forEach(e => { const g = svgEl('g', { class: 'xel' }); g.style.opacity = 0; g.dataset.s = e.s || 0;
+    if (e.t === 'arrow') { g.append(svgEl('line', { x1: X(e.x1), y1: Y(e.y1), x2: X(e.x2), y2: Y(e.y2), class: 'xedge', 'marker-end': 'url(#dah)' })); if (e.label) g.append(lab((X(e.x1) + X(e.x2)) / 2, (Y(e.y1) + Y(e.y2)) / 2 - 6, e.label)); }
+    else if (e.t === 'circle') { g.append(svgEl('circle', { cx: X(e.x), cy: Y(e.y), r: e.r * W, class: 'xnode' })); if (e.label) g.append(lab(X(e.x), Y(e.y) + 4, e.label)); }
+    else if (e.t === 'box') { g.append(svgEl('rect', { x: X(e.x), y: Y(e.y), width: e.w * W, height: e.h * H, rx: 6, class: 'xnode' })); if (e.label) g.append(lab(X(e.x) + e.w * W / 2, Y(e.y) + e.h * H / 2 + 4, e.label)); }
+    else if (e.t === 'point') { g.append(svgEl('circle', { cx: X(e.x), cy: Y(e.y), r: 5, class: 'xdot' })); if (e.label) g.append(lab(X(e.x) + 9, Y(e.y) + 4, e.label, 'start')); }
+    else if (e.t === 'curve') { g.append(svgEl('path', { d: e.pts.map((p, i) => (i ? 'L' : 'M') + X(p[0]) + ' ' + Y(p[1])).join(' '), class: 'xedge', fill: 'none' })); if (e.label) g.append(lab(X(e.pts[0][0]), Y(e.pts[0][1]) - 8, e.label)); }
+    else if (e.t === 'text') g.append(lab(X(e.x), Y(e.y), e.text));
+    svg.append(g); nodes.push(g); });
+  let shown = -1; const reveal = n => { if (n <= shown) return; shown = n; nodes.forEach(g => { if (+g.dataset.s <= n) { g.style.transition = 'opacity .5s'; g.style.opacity = 1; } }); };
+  const maxS = Math.max(...els.map(e => e.s || 0)); let tick = 0; reveal(0);
+  const timer = setInterval(() => { tick++; if (!svg.isConnected) { clearInterval(timer); DRAWS.delete(api); return; } if (tick % 3 === 0 && !DRAWS.spoken) reveal(Math.min(maxS, shown + 1)); }, 1000);
+  const api = { reveal }; DRAWS.add(api); const prev = c.onClose; c.onClose = () => { clearInterval(timer); DRAWS.delete(api); if (prev) prev(); };
+  return svg;
+}
+const MUSIC = {};                                                                    // the open music card (if any): updated by {t:'musicstate'}
+/* ---- NEWS card: headlines with source, time and a picture when the feed has one; tap one to read it in the frame ---- */
+function newsBuild(c, body, card) {
+  body.classList.add('newsb'); const ul = document.createElement('div'); ul.className = 'nws';
+  (card.items || []).forEach((it, i) => { const row = document.createElement('button'); row.className = 'nrow'; if (it.image) { const im = new Image(); im.loading = 'lazy'; im.referrerPolicy = 'no-referrer'; im.alt = ''; im.src = it.image; im.onerror = () => im.remove(); row.append(im); }
+    const t = document.createElement('div'); t.className = 'nt'; const h = document.createElement('b'); h.textContent = it.title; const m = document.createElement('small'); m.textContent = (it.source + (it.ago ? ' · ' + it.ago : '')).toUpperCase(); t.append(h, m); row.append(t);
+    row.onclick = () => send({ t: 'action', name: 'open_link', payload: { url: it.link } }); ul.append(row); });
+  const up = document.createElement('div'); up.className = 'wxup'; up.textContent = 'updated ' + (card.updated || ''); body.append(ul, up);
+}
+/* ---- CHAT widget: terminal style transcript ("$" me, ">" Jarvis), an input line, an image button and send. Typed text goes through the same router as voice. ---- */
+const CHAT = { log: [], views: new Set() };
+function chatPush(who, text) { if (!text) return; CHAT.log.push({ who, text }); if (CHAT.log.length > 60) CHAT.log.shift(); CHAT.views.forEach(v => v.add(who, text)); }
+function chatBuild(c, body, card) {
+  body.classList.add('chatb'); const log = document.createElement('div'); log.className = 'clog'; const form = document.createElement('form'); form.className = 'cform';
+  const inp = document.createElement('input'); inp.type = 'text'; inp.placeholder = 'type to Jarvis'; inp.autocomplete = 'off'; inp.spellcheck = false; inp.setAttribute('aria-label', 'message');
+  const img = document.createElement('button'); img.type = 'button'; img.className = 'box'; img.textContent = '▣'; img.setAttribute('aria-label', 'attach an image'); const file = document.createElement('input'); file.type = 'file'; file.accept = 'image/*'; file.hidden = true;
+  const go = document.createElement('button'); go.type = 'submit'; go.className = 'box'; go.textContent = '➤'; go.setAttribute('aria-label', 'send'); form.append(inp, img, go, file); body.append(log, form);
+  const add = (who, text) => { const l = document.createElement('div'); l.className = 'cl ' + who; const p = document.createElement('span'); p.className = 'cp'; p.textContent = who === 'me' ? '$' : '>'; const t = document.createElement('span'); t.textContent = text; l.append(p, t); log.append(l); log.scrollTop = log.scrollHeight; };
+  CHAT.log.forEach(m => add(m.who, m.text)); const view = { add }; CHAT.views.add(view); c.onClose = () => CHAT.views.delete(view);
+  let imgData = null; img.onclick = () => file.click(); file.onchange = () => { const f = file.files[0]; if (!f || f.size > 6e6) { toast('IMAGE TOO BIG (6 MB)'); return; } const r = new FileReader(); r.onload = () => { imgData = String(r.result); img.classList.add('on'); }; r.readAsDataURL(f); };
+  form.onsubmit = e => { e.preventDefault(); const t = inp.value.trim(); if (!t && !imgData) return; send({ t: 'typed', text: t || 'what is this?', image: imgData }); inp.value = ''; imgData = null; img.classList.remove('on'); };
+  setTimeout(() => inp.focus(), 250);
+}
+/* ---- FLASHCARD: the question, tap to flip, "got it" / "missed" (missed ones come back later), next and back ---- */
+function flashBuild(c, body, card) {
+  body.classList.add('flashb'); const q = document.createElement('div'); q.className = 'fq'; q.textContent = card.q; const a = document.createElement('div'); a.className = 'fa'; a.textContent = card.a; a.hidden = true;
+  const n = document.createElement('small'); n.className = 'fn'; n.textContent = `CARD ${card.i} OF ${card.n}` + (card.wrong ? ` · ${card.wrong} TO REVISIT` : ''); const row = document.createElement('div'); row.className = 'frow';
+  const mk = (t, op, cls) => { const b = document.createElement('button'); b.className = 'box ' + (cls || ''); b.textContent = t; b.onclick = () => { send({ t: 'action', name: 'learn_ctl', payload: { op } }); if (op !== 'flip') closeCard(c); }; row.append(b); return b; };
+  const flip = document.createElement('button'); flip.className = 'box'; flip.textContent = 'SHOW ANSWER'; flip.onclick = () => { a.hidden = !a.hidden; flip.textContent = a.hidden ? 'SHOW ANSWER' : 'HIDE ANSWER'; };
+  body.append(n, q, a, flip); mk('BACK', 'prev'); mk('MISSED', 'wrong'); mk('GOT IT', 'right'); mk('NEXT', 'next'); body.append(row);
+}
+function choiceBuild(c, body, card) {                                              // a few big choices, each a button with a short line under it; one tap decides
+  body.classList.add('choice'); const st = document.createElement('div'); st.className = 'chstat'; st.textContent = card.status || ''; body.append(st);
+  (card.choices || []).slice(0, 4).forEach(ch => { const b = document.createElement('button'); b.className = 'box chbtn'; const t = document.createElement('b'), u = document.createElement('small'); t.textContent = ch.label; u.textContent = ch.sub || ''; b.append(t, u);
+    b.onclick = () => { send({ t: 'action', name: ch.action, payload: ch.payload || {} }); closeCard(c); }; body.append(b); });
+}
+function musicBuild(c, body, card) {                                                // big cover art, title and artist small, a progress bar, the same controls as by voice
+  body.classList.add('media', 'music');
+  const art = new Image(); art.className = 'mart'; art.referrerPolicy = 'no-referrer'; art.alt = '';
+  const meta = document.createElement('div'); meta.className = 'mmeta'; const nm = document.createElement('b'), ar = document.createElement('span'), dv = document.createElement('small'); meta.append(nm, ar, dv);
+  const bar = document.createElement('div'); bar.className = 'mbar'; const fill = document.createElement('i'); bar.append(fill); const tm = document.createElement('div'); tm.className = 'mtime';
+  const row = document.createElement('div'); row.className = 'mctl';
+  const mk = (txt, label, fn) => { const b = document.createElement('button'); b.className = 'box mb'; b.textContent = txt; b.setAttribute('aria-label', label); b.onclick = fn; row.append(b); return b; };
+  const ctl = op => send({ t: 'action', name: 'spotify_ctl', payload: { op } });
+  mk('⏮', 'previous', () => ctl('previous')); const pp = mk('⏯', 'play or pause', () => ctl(st.playing ? 'pause' : 'resume')); mk('⏭', 'next', () => ctl('next'));
+  mk('−', 'quieter', () => ctl('vol_down')); mk('+', 'louder', () => ctl('vol_up')); mk('DEVICES', 'devices', () => send({ t: 'action', name: 'spotify_devices', payload: {} }));
+  let st = {}; let t0 = performance.now();
+  const fmt = x => `${Math.floor(x / 60)}:${String(Math.floor(x % 60)).padStart(2, '0')}`;
+  function paint() { const pr = (st.progress || 0) + (st.playing ? (performance.now() - t0) / 1000 : 0), d = st.duration || 0; fill.style.width = d ? Math.min(100, pr / d * 100) + '%' : '0%'; tm.textContent = d ? `${fmt(Math.min(pr, d))} / ${fmt(d)}` : ''; pp.textContent = st.playing ? '⏸' : '▶'; }
+  function set(m) { st = m; t0 = performance.now(); if (m.image && art.getAttribute('src') !== m.image) art.src = m.image; nm.textContent = m.name || 'Nothing playing'; ar.textContent = m.artist || ''; dv.textContent = (m.device ? 'on ' + m.device : '') + (m.volume != null ? '  ·  volume ' + m.volume + '%' : ''); paint(); }
+  set(card); body.append(art, meta, bar, tm, row);
+  const iv = setInterval(paint, 1000), poll = setInterval(() => send({ t: 'action', name: 'spotify_status', payload: {} }), 5000);       // polls only while the card is open
+  MUSIC.set = set; MUSIC.card = c; c.onClose = () => { clearInterval(iv); clearInterval(poll); if (MUSIC.card === c) { MUSIC.set = null; MUSIC.card = null; } };
+}
 function galleryBuild(body, card) {                                                // several pictures: one large, a swipeable strip underneath, a small caption in the corner
   body.classList.add('media', 'gal'); const ims = card.images || []; let cur = 0;
   const gm = document.createElement('div'); gm.className = 'gmain'; const im = new Image(); im.referrerPolicy = 'no-referrer'; im.alt = card.title || '';
@@ -479,7 +688,7 @@ $('#m-win').onclick = () => { openMenu(false); wswOpen(true); }; $('#wsj').oncli
 const LK = { boxes: [], sel: null, open: false, live: false, stream: null, poll: 0, srcName: '' };
 function lkLayout() {                                                              // put the box layer exactly over the displayed picture
   const im = $('#lkimg'), st = $('#lkstage'), b = $('#lkboxes'); if (!im.naturalWidth) return; const r = im.getBoundingClientRect(), s0 = st.getBoundingClientRect();
-  b.style.left = (r.left - s0.left) + 'px'; b.style.top = (r.top - s0.top) + 'px'; b.style.width = r.width + 'px'; b.style.height = r.height + 'px'; lkPlaceCard();
+  const f = LK.zoom || 1; b.style.left = ((r.left - s0.left) / f) + 'px'; b.style.top = ((r.top - s0.top) / f) + 'px'; b.style.width = (r.width / f) + 'px'; b.style.height = (r.height / f) + 'px'; lkPlaceCard();
 }
 function lkDraw() {
   const box = $('#lkboxes'); box.textContent = ''; box.classList.toggle('on', LK.boxes.length > 0);
@@ -495,10 +704,11 @@ function lkPlaceCard() {                                                        
   const c = $('#lkcard'); if (LK.sel === null || !LK.boxes[LK.sel] || c.style.display === 'none') return; const o = LK.boxes[LK.sel], br = $('#lkboxes').getBoundingClientRect(), W2 = innerWidth, H2 = innerHeight;
   let x = br.left + (o.x + o.w) * br.width + 10, y = br.top + o.y * br.height; if (x + 250 > W2) x = Math.max(8, br.left + o.x * br.width - 250); y = Math.min(Math.max(54, y), H2 - 150); c.style.left = x + 'px'; c.style.top = y + 'px';
 }
-function lkMode(live) { LK.live = live; $('#lk-live').classList.toggle('on', live); $('#lk-freeze').classList.toggle('on', !live); $('#lkinfo').classList.toggle('live', live); $('#lksrc').textContent = (live ? 'LIVE · ' : 'FROZEN · ') + (LK.srcName || 'LOOK').toUpperCase(); }
+function lkMode(live) { LK.live = live; $('#lkinfo').classList.toggle('live', live); $('#lksrc').textContent = (live ? 'LIVE · ' : '') + (LK.srcName || 'LOOK').toUpperCase(); }
 function lkStopLive() { clearInterval(LK.poll); LK.poll = 0; }
-function lkLive(stream) {
-  lkStopLive(); LK.boxes = []; LK.sel = null; lkDraw(); $('#lkcard').style.display = 'none'; lkMode(true);
+function lkStale(on) { $('#lkboxes').classList.toggle('stale', on); $('#lkagain').classList.toggle('on', on); clearTimeout(LK.staleT); if (!on && LK.boxes.length) LK.staleT = setTimeout(() => lkStale(true), 9000); }      // boxes belong to the frame they were found on: after a few seconds they fade and offer HIGHLIGHT AGAIN
+function lkLive(stream, keep) {
+  lkStopLive(); if (!keep) { LK.boxes = []; LK.sel = null; lkDraw(); $('#lkcard').style.display = 'none'; lkStale(false); } lkMode(true);
   if (stream) $('#lkimg').src = stream;                                             // the phone's own stream, straight from the phone
   else { const tick = async () => { try { const j = await fetch('/api/look/frame').then(r => r.json()); $('#lkimg').src = j.src; } catch (_) {} }; tick(); LK.poll = setInterval(tick, 2500); }
 }
@@ -506,25 +716,31 @@ function lkOpen(m) {
   LK.open = true; document.documentElement.classList.add('looking'); S.viewing = true; S.viewT = performance.now() + 3600000; LK.srcName = m.source || ''; lkStopLive(); LK.boxes = []; LK.sel = null; $('#lkcard').style.display = 'none';
   $('#lkimg').onload = lkLayout; $('#lkimg').src = m.src; lkMode(false); lkDraw();
 }
-function lkClose() { lkStopLive(); $('#lkimg').src = ''; LK.open = false; document.documentElement.classList.remove('looking'); S.viewing = false; $('#lkcard').style.display = 'none'; }   // the stream stops, the orb returns
+function lkClose() { lkStopLive(); lkStale(false); LK.zoom = 1; $('#lkstage').className = ''; $('#lkopts').classList.remove('on'); $('#lk-zoom').textContent = 'ZOOM 1×'; $('#lkimg').src = ''; LK.open = false; document.documentElement.classList.remove('looking'); S.viewing = false; $('#lkcard').style.display = 'none'; }   // the stream stops, the orb returns
 function lkEvent(m) {
   if (m.op === 'open') lkOpen(m);
-  else if (m.op === 'boxes') { LK.boxes = m.boxes || []; LK.sel = null; $('#lkcard').style.display = 'none'; lkDraw(); }
+  else if (m.op === 'boxes') { LK.boxes = m.boxes || []; LK.sel = null; $('#lkcard').style.display = 'none'; lkDraw(); lkStale(false); }
   else if (m.op === 'select') { LK.sel = m.i; lkDraw(); if (LK.boxes[m.i]) lkCard(LK.boxes[m.i].name, m.text || 'looking…'); }
   else if (m.op === 'freeze') { lkStopLive(); lkMode(false); }
-  else if (m.op === 'live') lkLive(m.stream);
+  else if (m.op === 'live') lkLive(m.stream, m.keep);
+  else if (m.op === 'frame') { if ($('#lkimg').getAttribute('src') !== m.src) { $('#lkimg').src = m.src; } LK.srcName = m.source || LK.srcName; lkMode(false); }
   else if (m.op === 'close') lkClose();
 }
 $('#lk-close').onclick = () => { lkClose(); send({ t: 'look_op', op: 'close' }); };
-$('#lk-live').onclick = () => { send({ t: 'look_op', op: 'live' }); };
-$('#lk-freeze').onclick = () => { send({ t: 'look_op', op: 'freeze' }); };
+$('#lkdots').onclick = () => { const o = $('#lkopts'); o.classList.toggle('on'); $('#lkdots').setAttribute('aria-expanded', o.classList.contains('on')); };
+$('#lk-phone').onclick = () => { send({ t: 'look_op', op: 'phone' }); toast('SENDING TO YOUR PHONE'); };
+$('#lk-hi').onclick = () => { send({ t: 'look_op', op: 'highlight' }); $('#lkopts').classList.remove('on'); };
+$('#lk-scan').onclick = () => { send({ t: 'look_op', op: 'scan' }); $('#lkopts').classList.remove('on'); };
+$('#lkagain').onclick = () => { send({ t: 'look_op', op: 'highlight' }); lkStale(false); };
+$('#lk-zoom').onclick = () => { const z = (LK.zoom || 1) % 3 + 1; LK.zoom = z; $('#lkstage').className = z > 1 ? 'z' + z : ''; $('#lk-zoom').textContent = 'ZOOM ' + z + '×'; lkLayout(); };
 $('#lk-mac').onclick = () => { send({ t: 'look_mac' }); toast('SENDING TO YOUR MAC'); };
 $('#look').addEventListener('pointerdown', e => e.stopPropagation());
-addEventListener('resize', lkLayout);
+addEventListener('resize', lkLayout); try { new ResizeObserver(lkLayout).observe($('#lkstage')); } catch (_) {}                     // the box layer follows the picture whenever its size changes: no layout jump
 
 /* ---- TERMINAL and FILES windows: movable/resizable/minimisable like the others. Typing here is yours alone: nothing in the assistant can write to it. ---- */
 let TERM = { token: null, claudeDir: '', waiters: [] };
 function termToken() { return new Promise(res => { if (TERM.token) return res(TERM.token); TERM.waiters.push(res); send({ t: 'term_open' }); }); }
+const copyText = t => { try { return navigator.clipboard.writeText(t).then(() => true).catch(() => { toast('COPY FAILED'); return false; }); } catch (_) { toast('COPY FAILED'); return Promise.resolve(false); } };
 const typingIn = el => !!el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable);
 function termMount(w, m) {
   const holder = document.createElement('div'); holder.className = 'term'; w.body.appendChild(holder);
@@ -587,39 +803,37 @@ function scratchMount(w) {
 }
 function clipMount(w) {
   const root = document.createElement('div'); root.className = 'files'; w.body.appendChild(root); const grid = document.createElement('div'); grid.className = 'fgrid'; grid.style.gridTemplateColumns = '1fr'; root.append(grid);
-  w.onclips = items => { grid.textContent = ''; items.forEach(t => { const b = document.createElement('button'); b.className = 'fi'; b.style.alignItems = 'flex-start'; b.style.textAlign = 'left'; b.textContent = t.slice(0, 160); b.onclick = () => { try { navigator.clipboard.writeText(t); toast('COPIED'); } catch (_) {} }; grid.append(b); }); if (!items.length) grid.textContent = 'nothing copied yet (passwords and card numbers are never kept)'; };
+  w.onclips = items => { grid.textContent = ''; items.forEach(t => { const b = document.createElement('button'); b.className = 'fi'; b.style.alignItems = 'flex-start'; b.style.textAlign = 'left'; b.textContent = t.slice(0, 160); b.onclick = () => { copyText(t).then(ok => ok && toast('COPIED')); }; grid.append(b); }); if (!items.length) grid.textContent = 'nothing copied yet (passwords and card numbers are never kept)'; };
   send({ t: 'clip_get' }); w.cliptimer = setInterval(() => send({ t: 'clip_get' }), 4000); const oc = w.onclose; w.onclose = () => { clearInterval(w.cliptimer); };
 }
 function openTools(list) { (list || []).forEach(t => { const tool = typeof t === 'string' ? { launcher: { kind: 'launch' }, scratchpad: { kind: 'scratch' }, clipboard: { kind: 'clip' } }[t] || { kind: t } : t; const w = openWin({ kind: tool.kind, preset: tool.preset, src: '', title: '' }); if (w && t.rect) { place(w, snapRect({ x: t.rect.x * innerWidth, y: t.rect.y * innerHeight, w: t.rect.w * innerWidth, h: t.rect.h * innerHeight })); } }); }
 function saveLayout(name) { const wins = WM.wins.filter(w => ['term', 'claude', 'files', 'launch', 'scratch', 'clip'].includes(w.type)).map(w => ({ kind: w.type === 'claude' ? 'term' : w.type, preset: w.type === 'claude' ? 'claude' : undefined, rect: { x: w.rect.x / innerWidth, y: w.rect.y / innerHeight, w: w.rect.w / innerWidth, h: w.rect.h / innerHeight } })); send({ t: 'layout_save', name, wins }); }
-$('#m-launch').onclick = () => { openMenu(false); openTools(['launcher']); }; $('#m-scratch').onclick = () => { openMenu(false); openTools(['scratchpad']); }; $('#m-clip').onclick = () => { openMenu(false); openTools(['clipboard']); };
+$('#m-launch').onclick = () => { openMenu(false); openTools(['launcher', 'scratchpad', 'clipboard']); };       // one TOOLS button: launcher, scratchpad and clipboard together
 const openTool = (kind, preset) => openWin({ kind, preset, src: '', title: '' });
 $('#m-term').onclick = () => { openMenu(false); openTool('term'); }; $('#m-claude').onclick = () => { openMenu(false); openTool('term', 'claude'); }; $('#m-files').onclick = () => { openMenu(false); openTool('files'); };
 $('#abort').onclick = () => send({ t: 'action', name: 'abort_desktop', payload: {} });
 $('#abort').addEventListener('pointerdown', e => e.stopPropagation());
 $('#s-twake').onclick = () => setPref('term_wake', !PREFS.term_wake);
 let cardId = 0;
+const sfx = ev => { if (ws && ws.readyState === 1 && !DOCK) send({ t: 'sfx', ev }); };
 function addCard(card) {
-  if (card.shot) { showView(card.src); return; }                                    // "what I saw": fullscreen, ring shrinks aside
+  if (card.shot) { showView(card.src); return; }
+  sfx('open');
+  if (card.replace && card.gid) cards.filter(o => o.gid === card.gid).forEach(closeCard);                     // a live card (the guide) is replaced, not stacked                                    // "what I saw": fullscreen, ring shrinks aside
   while (cards.length >= SLOTS.length) closeCard(cards[0]);
   const el = document.createElement('div'); el.className = 'card';
   const bar = document.createElement('div'); bar.className = 'bar';
-  bar.innerHTML = '<span class="tl"><button class="x tlr" aria-label="close">✕</button><button class="mn tly" aria-label="minimise">–</button><button class="ex tlg" aria-label="full screen">⤢</button></span><b></b><span class="pg"><button class="pp" aria-label="previous">‹</button><i></i><button class="pn" aria-label="next">›</button></span>'; bar.querySelector('b').textContent = (card.title || card.type);
+  bar.innerHTML = '<b></b><span class="pg"><button class="pp" aria-label="previous">‹</button><i></i><button class="pn" aria-label="next">›</button></span><span class="tl"><button class="mn tly" aria-label="minimise">–</button><button class="ex tlg" aria-label="full screen">⤢</button><button class="x tlr" aria-label="close">✕</button></span><button class="hdl" aria-label="window controls"></button>';
+  const ctlT = () => { clearTimeout(el._ctlT); el._ctlT = setTimeout(() => el.classList.remove('ctl'), 5000); };            // the controls slide out of the corner and tuck away again by themselves
+  bar.querySelector('.hdl').onclick = e => { e.stopPropagation(); el.classList.toggle('ctl'); ctlT(); };
+  bar.querySelector('b').addEventListener('click', e => { if (!c.dragged) { el.classList.toggle('ctl'); ctlT(); } }); bar.querySelector('b').textContent = (card.title || card.type);
   const body = document.createElement('div'); body.className = 'body';
   const meta = document.createElement('div'); meta.className = 'meta'; meta.innerHTML = '<span></span><span></span>';
   meta.firstChild.textContent = card.type.toUpperCase() + ' // JARVIS'; meta.lastChild.textContent = 'ID ' + String(++cardId).padStart(3, '0');
-  el.append(bar, body, meta);
-  const c = { el, card, map: null, isFull: false, x: bar.querySelector('.x'), ex: bar.querySelector('.ex'), pg: bar.querySelector('.pg') }; let post = null;
+  el.append(bar, body, meta); if (card.wide) { el.style.setProperty('--cw', Math.min(innerWidth - 40, card.wide) + 'px'); el.classList.add('widget'); }
+  const c = { gid: card.gid, el, card, map: null, isFull: false, x: bar.querySelector('.x'), ex: bar.querySelector('.ex'), pg: bar.querySelector('.pg') }; let post = null;
   if (card.sources && card.sources.length) meta.firstChild.textContent = card.sources.slice(0, 3).map(u => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch (_) { return String(u); } }).join(' · ').toUpperCase();
-  if (card.type === 'weather') {
-    const w = document.createElement('div'); w.className = 'wx';
-    w.innerHTML = '<div class="now"><span class="big"></span><span class="desc"></span></div><div class="det"></div><div class="days"></div>';
-    w.querySelector('.big').textContent = card.temp + card.unit; w.querySelector('.desc').textContent = card.desc;
-    w.querySelector('.det').textContent = `feels ${card.feels}° · wind ${card.wind} ${card.wind_unit} · humidity ${card.humidity}% · ${card.place}`;
-    (card.days || []).forEach(d => { const e = document.createElement('div'); e.className = 'day'; e.innerHTML = '<b></b><span></span><i></i>';
-      e.querySelector('b').textContent = d.name.toUpperCase(); e.querySelector('span').textContent = d.hi + '° / ' + d.lo + '°'; e.querySelector('i').textContent = d.desc + (d.pop >= 30 ? ' · ' + d.pop + '%' : ''); w.querySelector('.days').append(e); });
-    body.append(w);
-  }
+  if (card.type === 'weather') weatherBuild(body, card);
   else if (card.type === 'text') body.textContent = card.text || '';
   else if (card.type === 'memory') {                                               // what he remembers: each fact has an x to forget it by touch
     const ul = document.createElement('ul'); ul.className = 'mem';
@@ -644,34 +858,78 @@ function addCard(card) {
     im.onerror = () => { body.classList.remove('media', 'gal'); body.textContent = 'IMAGE UNAVAILABLE'; }; im.src = card.src; gm.append(im);
     if (card.title) { const cp = document.createElement('div'); cp.className = 'gcap'; cp.textContent = card.title; gm.append(cp); } body.append(gm); }      // the picture is the card, the caption a small label in the corner
   else if (card.type === 'gallery') galleryBuild(body, card);
+  else if (card.type === 'music') musicBuild(c, body, card);
+  else if (card.type === 'choice') choiceBuild(c, body, card);
+  else if (card.type === 'news') newsBuild(c, body, card);
+  else if (card.type === 'flash') flashBuild(c, body, card);
+  else if (card.type === 'chat') chatBuild(c, body, card);
+  else if (card.type === 'explain') explainBuild(c, body, card);
+  else if (card.type === 'scene3d') holoBuild(c, body, card);
+  else if (card.type === 'markets') mktBuild(c, body, card);
   else if (card.type === 'chart') { body.classList.add('media'); const cn = document.createElement('canvas'); body.append(cn); post = c.redraw = () => drawChart(cn, card); }
-  else if (card.type === 'map') { body.classList.add('media'); const m = document.createElement('div'); m.className = 'map'; body.append(m);
-    post = () => { try {
-      c.map = L.map(m, { zoomControl: false, attributionControl: true }).setView([card.lat, card.lon], card.zoom || 13);
-      L.tileLayer('https://services.arcgisonline.com/arcgis/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', { maxNativeZoom: 16, maxZoom: 18, attribution: 'Esri · © OpenStreetMap' }).addTo(c.map);   // keyless dark base (CARTO's CDN now needs an API key)
-      L.circleMarker([card.lat, card.lon], { radius: 4, color: '#ff2d55', weight: 2, fillColor: '#ff2d55', fillOpacity: 1 }).addTo(c.map);
-    } catch (e) { body.textContent = 'MAP UNAVAILABLE'; } }; }
+  else if (card.type === 'map') { body.classList.add('media'); const fr = document.createElement('iframe'); fr.className = 'mapframe'; fr.title = 'map';       // the map page (vector, 2D/3D, me-dot; raster fallback by itself)
+    fr.src = '/map?id=' + encodeURIComponent(card.mapid || 'me') + (card.lat != null && card.lon != null ? '&lat=' + card.lat + '&lon=' + card.lon + '&label=' + encodeURIComponent(card.title || '') : ''); body.append(fr); }
   cards.push(c); $('#cards').append(el);
   placeCard(el, cards.length - 1);
-  requestAnimationFrame(() => { el.classList.add('in'); post && post(); c.map && c.map.invalidateSize(); });
+  requestAnimationFrame(() => { el.classList.add('in'); post && post(); });
   bar.querySelector('.x').onclick = () => closeCard(c);                                     // CLOSE always closes, in one press (it used to shrink a full-screen card to a small panel first)
   bar.querySelector('.ex').onclick = () => c.isFull ? collapseCard(c) : expandCard(c);
   bar.querySelector('.mn').onclick = () => { if (c.isFull) collapseCard(c); else el.classList.toggle('shaded'); };                  // yellow: back to small, or roll the card up to its title bar      // maximise / minimise is its own button with its own icon
   bar.querySelector('.pp').onclick = () => flip(c, -1); bar.querySelector('.pn').onclick = () => flip(c, 1);
   const now = performance.now(); if (now - lastCardT > 2500) batch = []; lastCardT = now; batch.push(c);   // cards of one reply form a batch you can page through
   if (S.ghost) setGhost(false);
-  const MEDIA = ['image', 'gallery', 'map', 'chart', 'weather'].includes(card.type);
+  const MEDIA = ['image', 'gallery', 'map', 'chart', 'weather', 'music', 'explain', 'scene3d', 'markets'].includes(card.type);
   if (card.type === 'report' || card.type === 'text' || card.type === 'list' || card.type === 'memory') { el.classList.add('sidepanel'); }
   if (MEDIA && !card.small && (batch.length === 1 || !cards.some(o => o.isFull))) expandCard(c);                                              // the picture, map or chart gets the screen; text stays a small card (a research report is a side panel with a MORE button)
   else if (!MEDIA && card.full) expandCard(c);
   updatePager();                                                                      // 1/3 .. 3/3 once more cards of the reply arrive
+  if (card.wide) {                                                                   // a widget: remembers its place and size, can be resized from its bottom-right corner, never rests on the orb
+    const key = 'jw_' + (card.gid || card.type); let sv = null; try { sv = JSON.parse(localStorage.getItem(key) || 'null'); } catch (_) {} c.wkey = key;
+    if (sv && !c.isFull) { const w = clamp(sv.w || el.offsetWidth, 240, W - 20), h = sv.h ? clamp(sv.h, 120, H - 20) : null; el.style.setProperty('--cw', w + 'px'); if (h) el.style.maxHeight = h + 'px'; if (h) el.style.height = h + 'px';
+      const x = clamp(sv.x, 0, W - w), y = clamp(sv.y, 0, H - 60), ox2 = ring.x, oy2 = ring.y, rr = R * 1.3; const hits = x < ox2 + rr && x + w > ox2 - rr && y < oy2 + rr && y + (h || 200) > oy2 - rr;
+      if (!hits) { el.style.left = x + 'px'; el.style.top = y + 'px'; c.moved = true; } }
+    const rz = document.createElement('div'); rz.className = 'rsz'; rz.setAttribute('aria-label', 'resize'); el.append(rz); let rs = null;
+    rz.addEventListener('pointerdown', e => { rs = { id: e.pointerId, x: e.clientX, y: e.clientY, w: el.offsetWidth, h: el.offsetHeight }; rz.setPointerCapture(e.pointerId); e.stopPropagation(); c.moved = true; });
+    rz.addEventListener('pointermove', e => { if (!rs || e.pointerId !== rs.id) return; const w = clamp(rs.w + e.clientX - rs.x, 240, W - el.offsetLeft - 4), h = clamp(rs.h + e.clientY - rs.y, 120, H - el.offsetTop - 4); el.style.setProperty('--cw', w + 'px'); el.style.height = h + 'px'; el.style.maxHeight = h + 'px'; });
+    rz.addEventListener('pointerup', () => { if (rs) { rs = null; saveWidget(c); } }); rz.addEventListener('pointercancel', () => { rs = null; });
+  }
   let drag = null;                                                                   // drag by the title bar (touch friendly)
   bar.addEventListener('pointerdown', e => { if (e.target.closest('button')) return; if (c.isFull) { drag = { id: e.pointerId, y0: e.clientY, swipe: true }; try { bar.setPointerCapture(e.pointerId); } catch (_) {} e.stopPropagation(); return; } c.moved = true; drag = { id: e.pointerId, dx: e.clientX - el.offsetLeft, dy: e.clientY - el.offsetTop }; bar.setPointerCapture(e.pointerId); el.parentNode.append(el); e.stopPropagation(); });
   bar.addEventListener('pointermove', e => { if (!drag || e.pointerId !== drag.id) return; if (drag.swipe) { drag.dy = Math.max(0, e.clientY - drag.y0); el.style.transform = `translateY(${drag.dy}px)`; el.style.opacity = String(1 - drag.dy / 400); return; } el.style.left = clamp(e.clientX - drag.dx, 0, W - el.offsetWidth) + 'px'; el.style.top = clamp(e.clientY - drag.dy, 0, H - 40) + 'px'; });
   const end = e => { if (!drag || e.pointerId !== drag.id) return; const d = drag; drag = null;
-    if (d.swipe) { el.style.opacity = ''; el.style.transform = ''; if ((d.dy || 0) > 70) collapseCard(c); } };                         // swipe down = back down
+    if (d.swipe) { el.style.opacity = ''; el.style.transform = ''; if ((d.dy || 0) > 70) collapseCard(c); } else saveWidget(c); };                         // swipe down = back down; a moved widget remembers where it is
   bar.addEventListener('pointerup', end); bar.addEventListener('pointercancel', end);
   return c;
+}
+
+/* ---- WEATHER card: big temperature, a thin-line condition icon, feels / wind / rain, sunrise and sunset, an hourly strip and a 5-day row, a few subtle animated lines ---- */
+function wxIcon(kind, night, size) {
+  const sv = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); sv.setAttribute('viewBox', '0 0 64 64'); sv.setAttribute('width', size || 64); sv.setAttribute('height', size || 64); sv.setAttribute('class', 'wxi k-' + kind);
+  const P = (d, cls) => { const e = document.createElementNS('http://www.w3.org/2000/svg', 'path'); e.setAttribute('d', d); if (cls) e.setAttribute('class', cls); sv.appendChild(e); };
+  const cloud = 'M18 44h28a9 9 0 0 0 0-18 12 12 0 0 0-23-3 10 10 0 0 0-5 21z';
+  const sun = () => { P('M32 20a8 8 0 1 0 .01 0z', 'core'); for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4; P(`M${32 + Math.cos(a) * 13} ${32 + Math.sin(a) * 13}L${32 + Math.cos(a) * 18} ${32 + Math.sin(a) * 18}`, 'ray'); } };
+  const moon = () => P('M40 14a18 18 0 1 0 12 28A15 15 0 0 1 40 14z', 'core');
+  if (kind === 'sun') (night ? moon : sun)();
+  else if (kind === 'partly') { if (night) moon(); else { P('M22 22a7 7 0 1 0 .01 0z', 'core'); for (let i = 0; i < 6; i++) { const a = i * Math.PI / 3 - 1; P(`M${22 + Math.cos(a) * 11} ${22 + Math.sin(a) * 11}L${22 + Math.cos(a) * 15} ${22 + Math.sin(a) * 15}`, 'ray'); } } P(cloud, 'cl'); }
+  else if (kind === 'cloud') P(cloud, 'cl');
+  else if (kind === 'fog') { P(cloud, 'cl'); P('M16 50h32', 'ln'); P('M20 56h24', 'ln l2'); }
+  else if (kind === 'drizzle' || kind === 'rain') { P(cloud, 'cl'); [[24, 50], [33, 52], [42, 50]].forEach(([x, y], i) => P(`M${x} ${y}l-2 ${kind === 'rain' ? 8 : 5}`, 'dr d' + i)); }
+  else if (kind === 'snow') { P(cloud, 'cl'); [[24, 52], [33, 54], [42, 52]].forEach(([x, y], i) => P(`M${x} ${y}h.1`, 'fl f' + i)); }
+  else if (kind === 'storm') { P(cloud, 'cl'); P('M34 46l-6 9h6l-4 8', 'bolt'); }
+  return sv;
+}
+function weatherBuild(body, card) {
+  body.classList.add('wxb'); const w = document.createElement('div'); w.className = 'wx2';
+  const top = document.createElement('div'); top.className = 'wxtop'; top.append(wxIcon(card.kind, card.night, 72));
+  const big = document.createElement('div'); big.className = 'wxbig'; big.textContent = card.temp + '°'; const d = document.createElement('div'); d.className = 'wxd';
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']; const dir = dirs[Math.round((card.wind_dir || 0) / 45) % 8];
+  const l1 = document.createElement('b'); l1.textContent = (card.desc || '').toUpperCase(); const l2 = document.createElement('span'); l2.textContent = `feels ${card.feels}° · wind ${card.wind} ${card.wind_unit} ${dir}`; const l3 = document.createElement('span'); l3.textContent = `rain ${card.pop || 0}% · humidity ${card.humidity}%`;
+  const l4 = document.createElement('span'); l4.textContent = `↑ ${card.sunrise}   ↓ ${card.sunset}`; d.append(l1, l2, l3, l4); top.append(big, d); w.append(top);
+  const hrs = document.createElement('div'); hrs.className = 'wxhrs'; (card.hours || []).forEach(h => { const e = document.createElement('div'); e.className = 'wxh'; const t = document.createElement('small'); t.textContent = h.t; const v = document.createElement('b'); v.textContent = h.temp + '°';
+    const p = document.createElement('i'); p.textContent = h.pop >= 20 ? h.pop + '%' : ''; e.append(t, wxIcon(h.kind, false, 26), v, p); hrs.append(e); }); w.append(hrs);
+  const dys = document.createElement('div'); dys.className = 'wxdays'; (card.days || []).forEach(x => { const e = document.createElement('div'); e.className = 'wxday'; const n = document.createElement('small'); n.textContent = x.name.toUpperCase(); const v = document.createElement('b'); v.textContent = x.hi + '° / ' + x.lo + '°';
+    const p = document.createElement('i'); p.textContent = x.pop >= 30 ? x.pop + '%' : ''; e.append(n, wxIcon(x.kind, false, 30), v, p); dys.append(e); }); w.append(dys);
+  const up = document.createElement('div'); up.className = 'wxup'; up.textContent = (card.place || '') + ' · updated ' + (card.updated || '') + (card.stale ? ' (old copy: no connection)' : ''); w.append(up); body.append(w);
 }
 
 /* ---------------------------------------------------------------- live status ("searching") */
@@ -689,18 +947,19 @@ function talk(down, look) {
   else if (holding !== null) { holding = null; send({ t: 'talk', down: false }); if (P.has('demo')) setMode('idle'); }
 }
 function holdable(el, look) {
-  let id = null;
-  el.addEventListener('pointerdown', e => { if (id !== null) return; id = e.pointerId; el.setPointerCapture(id); talk(true, look); e.stopPropagation(); e.preventDefault(); });
-  const up = e => { if (e.pointerId === id) { id = null; talk(false); } };
+  let id = null, t0 = 0, timer = 0, talking = false;
+  el.addEventListener('pointerdown', e => { if (id !== null) return; id = e.pointerId; el.setPointerCapture(id); e.stopPropagation(); e.preventDefault(); t0 = performance.now(); talking = false;
+    if (look) timer = setTimeout(() => { talking = true; talk(true, true); }, 380); else { talking = true; talk(true, false); } });                 // the camera button: a tap is NOT a recording
+  const up = e => { if (e.pointerId !== id) return; id = null; clearTimeout(timer);
+    if (talking) talk(false); else if (look && e.type === 'pointerup') send({ t: 'look_button' }); };                                                // tap = open / close the LOOK view
   el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up); el.addEventListener('lostpointercapture', up);
 }
 holdable($('#i-cam'), true);
-$('#i-cam').addEventListener('click', () => { if (S.source === 'camera') send({ t: 'camera' }); });   // a quick tap with the camera source shows a fresh frame
 let bgPtr = null, bgHeld = false, bgTimer = 0, lastTap = { t: 0, x: 0, y: 0 };      // press-and-hold on empty space talks; a double tap hides the UI
 document.addEventListener('pointerdown', e => {
   if (e.target.closest('#menu, #settings, #menubtn')) return;
   if ($('#menu').classList.contains('on')) { openMenu(false); }                     // tapping elsewhere closes the menu
-  if ($('#hist').classList.contains('open') && !e.target.closest('#hist, #i-chat')) toggleHist(false);
+  if ($('#hist').classList.contains('open') && !e.target.closest('#hist, #s-hist')) toggleHist(false);
   if (bgPtr !== null || e.target.closest('button, .card, #hist, #dock, #srch, #vclose')) return;
   bgPtr = e.pointerId; bgHeld = false; clearTimeout(bgTimer); bgTimer = setTimeout(() => { bgHeld = true; talk(true, false); }, 220);   // brief taps must not start recording
 });
@@ -722,7 +981,7 @@ $('#s-tkey').onclick = () => { capturing = true; $('#s-tkey').textContent = 'PRE
 document.addEventListener('keydown', e => {
   if (capturing) { if (['Alt', 'Control', 'Shift', 'Meta'].includes(e.key)) return; e.preventDefault(); if (e.altKey || e.ctrlKey || e.metaKey) { themeKey = keyCombo(e); try { localStorage.setItem('themeKey', themeKey); } catch (_) {} } capturing = false; showTKey(); return; }
   if (typing(e.target)) return;                                                      // plain letters never trigger a shortcut, and nothing fires while a text box has focus
-  if ((e.altKey || e.ctrlKey || e.metaKey) && keyCombo(e) === themeKey) { e.preventDefault(); setTheme(S.theme === 'jarvis' ? 'rose' : 'jarvis'); return; }
+  if ((e.altKey || e.ctrlKey || e.metaKey) && keyCombo(e) === themeKey) { e.preventDefault(); setTheme(nextPersona()); return; }
   if (e.key === 'Escape' && document.documentElement.classList.contains('efull')) { setEfull(false); send({ t: 'action', name: 'embed_full', payload: { on: false } }); return; }
   if (e.key === 'Escape' && typingIn(e.target) && e.target.closest && e.target.closest('.term')) return;       // Escape belongs to the program in the terminal (vim, Claude Code)
   if (e.key === 'Escape' && $('#settings').classList.contains('on')) { closeSettings(); return; }
@@ -740,17 +999,17 @@ orbEl.addEventListener('pointerup', orbUp); orbEl.addEventListener('pointercance
 
 /* ---- the one small menu (top-right) + settings row; closes by itself */
 let menuT = 0;
-function openMenu(on) {
-  $('#menu').classList.toggle('on', on); if (!on) $('#settings').classList.remove('on');
+function openMenu(on) { if (on !== $('#menu').classList.contains('on')) sfx('menu');
+  $('#menu').classList.toggle('on', on);        // (it used to close the settings panel too: a stray tap, a menu action or the menu's own timer shut your settings. Now only CLOSE or Escape does.)
   clearTimeout(menuT); if (on) menuT = setTimeout(() => { if (!$('#settings').classList.contains('on')) openMenu(false); }, 6000);
 }
 const keepMenu = () => { if ($('#menu').classList.contains('on')) { clearTimeout(menuT); menuT = setTimeout(() => openMenu(false), 6000); } };
 $('#menu').addEventListener('pointerdown', keepMenu); $('#settings').addEventListener('pointerdown', keepMenu);
 $('#menubtn').onclick = () => openMenu(!$('#menu').classList.contains('on'));
-function toggleHist(force) { const o = $('#hist').classList.toggle('open', typeof force === 'boolean' ? force : undefined); $('#i-chat').classList.toggle('sel', o); return o; }
-$('#m-hist').onclick = () => { toggleHist(); openMenu(false); }; $('#i-chat').onclick = () => toggleHist();
+function toggleHist(force) { const o = $('#hist').classList.toggle('open', typeof force === 'boolean' ? force : undefined); return o; }
+$('#s-hist').onclick = () => { closeSettings(); toggleHist(); };       // History lives in Settings > Advanced now
 $('#m-hide').onclick = () => setGhost(true);
-$('#m-theme').onclick = () => setTheme(S.theme === 'jarvis' ? 'rose' : 'jarvis');
+$('#m-theme').onclick = () => setTheme(nextPersona());
 $('#m-clear').onclick = () => { clearView(); openMenu(false); };
 $('#m-set').onclick = () => { $('#menu').classList.remove('on'); $('#settings').classList.add('on'); document.documentElement.classList.add('sopen'); showPrefs(); };
 $('#vclose').onclick = hideView;
@@ -763,16 +1022,16 @@ $('#s-follow').onclick = () => { followup = !followup; send({ t: 'followup', on:
 $('#s-tidy').onclick = () => { tidy(); openMenu(false); };
 let muted = false, handsfree = true;                                                // MUTE = deaf mode; the SERVER owns it (persisted) - voice can never change it
 function showMute() {
-  document.documentElement.classList.toggle('muted', muted); $('#i-mute').setAttribute('aria-pressed', muted);
+  document.documentElement.classList.toggle('muted', muted); $('#i-mute').setAttribute('aria-pressed', muted); $('#mutel').textContent = muted ? 'MUTED' : 'MIC LIVE';
   $('#conn').textContent = S.mode === 'offline' ? 'OFFLINE' : muted ? 'MUTED · NOT LISTENING' : handsfree ? 'CONNECTED · HANDS-FREE' : 'CONNECTED';
 }
 $('#i-mute').onclick = () => { send({ t: 'muted', on: !muted }); toast(muted ? 'UNMUTING' : 'MUTING: NOTHING WILL LISTEN FOR WAKE PHRASES'); };
 const SOURCES = ['auto', 'screen', 'window', 'camera', 'phone'];
-const setSource = v => { S.source = v; send({ t: 'source', v }); $('#m-src').textContent = 'CAMERA SOURCE · ' + v.toUpperCase(); };
+const setSource = v => { S.source = v; send({ t: 'source', v }); $('#s-src').textContent = 'CAMERA SOURCE · ' + v.toUpperCase(); };
 $('#m-orb').onclick = () => { openMenu(false); send({ t: 'action', name: 'to_orb', payload: {} }); };
-$('#m-src').onclick = () => setSource(SOURCES[(SOURCES.indexOf(S.source) + 1) % SOURCES.length]);
-$('#i-map').onclick = () => addCard({ type: 'map', title: 'World', lat: 20, lon: 0, zoom: 2 });
-$('#i-music').onclick = () => toast('MUSIC NOT CONNECTED');
+
+$('#i-map').onclick = () => addCard({ type: 'map', title: 'Map' });
+$('#i-music').onclick = () => send({ t: 'action', name: 'music_open', payload: {} });
 
 /* ---- controls fade to low opacity when idle and brighten on touch */
 function updateCalm() { const calm = performance.now() - S.touchT > 4000 && !$('#menu').classList.contains('on'); document.documentElement.classList.toggle('calm', calm); }
@@ -832,9 +1091,10 @@ function openWin(m) {
   const type = winType(m), html = document.documentElement; let w = WM.wins.find(o => o.type === type);
   if (w) { const old = w.body.firstChild; if (old && old.src !== undefined) { old.src = m.src; } if (w.state === 'mini') setState(w, 'normal'); toFront(w); html.classList.add('embed'); return w; }   // same type: reuse the window
   const el = document.createElement('div'); el.className = 'win';
-  el.innerHTML = '<div class="wt"><span class="tl"><button class="wb wx tlr" aria-label="close">&#10005;</button><button class="wb wmin tly" aria-label="minimise">&#8211;</button><button class="wb wmax tlg" aria-label="full screen">&#10530;</button></span><span class="wtt"></span></div>' +
+  el.innerHTML = '<div class="wt"><span class="wtt"></span><span class="tl"><button class="wb wmin tly" aria-label="minimise">&#8211;</button><button class="wb wmax tlg" aria-label="full screen">&#10530;</button><button class="wb wx tlr" aria-label="close">&#10005;</button></span><button class="hdl" aria-label="window controls"></button></div>' +
     '<div class="wbody"></div><div class="wr wre"></div><div class="wr wrb"></div><div class="wr wrc"></div><div class="wtile"><button class="wb wpp" aria-label="play or pause">&#10074;&#10074;</button><button class="wb wex" aria-label="expand">&#10530;</button></div>';
   w = { type, el, body: el.querySelector('.wbody'), state: 'normal', rect: null, paused: false, saved: null }; w.titleEl = el.querySelector('.wtt');
+  { const ctlT = () => { clearTimeout(el._ctlT); el._ctlT = setTimeout(() => el.classList.remove('ctl'), 5000); }; el.querySelector('.hdl').onclick = e => { e.stopPropagation(); el.classList.toggle('ctl'); ctlT(); }; }
   if (m.kind === 'iframe') { const f = document.createElement('iframe'); f.src = m.src; f.allow = 'autoplay; encrypted-media; picture-in-picture'; f.referrerPolicy = 'origin'; w.body.appendChild(f); }   // no 'fullscreen' permission: the only full screen is ours
   else if (m.kind === 'term') termMount(w, m);
   else if (m.kind === 'files') filesMount(w);
@@ -907,7 +1167,7 @@ function idleShow(on) {
   if (on) { idleSince = performance.now(); sc.classList.remove('dim'); clockSync(); idleLoad();
     secTimer = setInterval(() => { const d = new Date(); clockText(); if (d.getSeconds() === 0) { clockSync(); idleLoad(); } }, 1000);        // text once a second; re-sync the animations every minute
     shiftT = setInterval(burnShift, 60000); idleTick = setInterval(() => { if (performance.now() - idleSince > 600000) sc.classList.add('dim'); }, 30000); }          // dims after 10 minutes
-  else { lastAct = performance.now(); sc.classList.remove('dim'); $('#icwrap').style.transform = ''; }
+  else { lastAct = performance.now(); sc.classList.remove('dim'); $('#icwrap').style.transform = ''; if (window.playBoot) window.playBoot('wake'); }       // waking from the clock plays the start-up animation
 }
 const touchAct = () => { lastAct = performance.now(); if (idleOn) idleShow(false); };            // any touch, key, wake word or sound brings the normal view back at once (nothing restarts)
 ['pointerdown', 'pointermove', 'keydown', 'touchstart', 'wheel'].forEach(ev => addEventListener(ev, touchAct, { passive: true }));
@@ -920,6 +1180,18 @@ if (P.has('idle')) addEventListener('load', () => setTimeout(() => idleShow(true
 
 /* ---------------------------------------------------------------- heartbeat (the watchdog restarts a page that goes silent) and the health line (hidden until something is wrong) */
 setInterval(() => { if (!DOCK && ws && ws.readyState === 1) send({ t: 'beat' }); }, 3000);
+/* ---- Claude Code / Codex status: a corner badge (also on the clock) and a coloured screen edge. Yellow blinks when it needs you, red when it failed, green flashes once and stays as a badge until tapped. ---- */
+const CS = { state: 'idle', t: 0 };
+function claudeStat(m) {
+  const b = $('#cstat'), e = $('#cedge'), who = (m.who === 'codex' ? 'CODEX' : 'CLAUDE'); CS.state = m.state;
+  e.className = ''; void e.offsetWidth;
+  if (m.state === 'idle') { b.hidden = true; return; }
+  b.hidden = false; b.dataset.s = m.state; b.textContent = who + ' · ' + ({ working: 'WORKING', needs: 'NEEDS ME', done: 'DONE', error: 'FAILED' }[m.state] || '') + (m.msg ? ' · ' + m.msg.slice(0, 48) : '');
+  if (m.state === 'needs') e.className = 'cy'; else if (m.state === 'error') e.className = 'cr'; else if (m.state === 'done') e.className = 'cg';
+  touchAct && m.state !== 'working' && (lastAct = performance.now());
+}
+$('#pdot').onclick = () => send({ t: 'presence', op: $('#pdot').classList.contains('paused') ? 'resume' : 'pause' });
+$('#cstat').onclick = () => { $('#cstat').hidden = true; $('#cedge').className = ''; CS.state = 'idle'; };
 function showHealth(msg) { const e = $('#hstat'); e.textContent = msg || ''; e.style.display = msg ? 'block' : 'none'; }
 
 /* ---------------------------------------------------------------- websocket */
@@ -930,25 +1202,36 @@ function connect() {
     const m = JSON.parse(ev.data);
     if (m.t === 'heard') { if (PREFS.show_heard !== false) { const e = $('#heard'); e.textContent = 'heard: ' + m.text + (m.route ? '   →   ' + m.route : ''); e.style.display = 'block'; clearTimeout(e._t); e._t = setTimeout(() => { e.style.display = 'none'; }, 9000); } }
     else if (m.t === 'offline') { const e = $('#offl'); e.textContent = m.msg || ''; e.style.display = m.msg ? 'block' : 'none'; }
-    else if (m.t === 'clip') { try { navigator.clipboard.writeText(m.text); toast('COPIED'); } catch (_) { toast('COPY FAILED'); } }
+    else if (m.t === 'clip') { copyText(m.text).then(ok => ok && toast('COPIED')); }
     else if (m.t === 'phonereq') { const e = $('#preq'); e.textContent = 'PHONE: ' + m.text + '  →  ' + m.reply; e.style.display = 'block'; clearTimeout(e._t); e._t = setTimeout(() => { e.style.display = 'none'; }, 14000); }
     else if (m.t === 'termtoken') { TERM.token = m.token; TERM.claudeDir = m.claude_dir || ''; TERM.waiters.splice(0).forEach(f => f(m.token)); }
     else if (m.t === 'look') lkEvent(m);
-    else if (m.t === 'prefs') { Object.assign(PREFS, m); showPrefs(); }
-    else if (m.t === 'hello') { if (m.prefs) { Object.assign(PREFS, m.prefs); showPrefs(); } if (m.persona && m.persona !== S.theme) setTheme(m.persona, false); followup = m.followup !== false; showFollow(); muted = !!m.muted; handsfree = !!m.handsfree; setMode(m.state); showMute(); $('#hist').textContent = ''; (m.history || []).forEach(h => addMsg(h.role, h.text)); }
+    else if (m.t === 'prefs') { Object.assign(PREFS, m); showPrefs(); document.documentElement.classList.toggle('whisper', !!PREFS.whisper); }
+    else if (m.t === 'hello') { if (m.personas) { PERS = Object.fromEntries(m.personas.map(p => [p.id, p])); renderPersonaList(); applyLook(); } if (m.prefs) { Object.assign(PREFS, m.prefs); showPrefs(); } if (m.persona && m.persona !== S.theme) setTheme(m.persona, false); followup = m.followup !== false; showFollow(); muted = !!m.muted; handsfree = !!m.handsfree; setMode(m.state); showMute(); $('#hist').textContent = ''; (m.history || []).forEach(h => addMsg(h.role, h.text)); }
     else if (m.t === 'state') { setMode(m.state, m.detail); if (m.state !== 'idle') touchAct(); }
     else if (m.t === 'level') {
       if (idleOn && m.src === 'mic' && m.v > .4) idleShow(false);                      // a sound from you
-      if ((m.src === 'mic' && S.mode === 'listening') || (m.src === 'out' && S.mode === 'speaking')) S.tgt = Math.max(S.tgt * .5, m.v);
+      if ((m.src === 'mic' && S.mode === 'listening') || (m.src === 'out' && S.mode === 'speaking')) S.tgt = Math.max(S.tgt * .5, m.v * (S.mAmp || 1));
     }
+    else if (m.t === 'restarted') showHealth('restarted because: ' + m.what + ' (' + m.why + ')');
+    else if (m.t === 'claudestat') claudeStat(m);
+    else if (m.t === 'presence') { const d = $('#pdot'); d.hidden = !m.on; d.classList.toggle('paused', !!m.paused); d.querySelector('span').textContent = m.paused ? 'CAM PAUSED' : 'CAM ON'; document.documentElement.classList.toggle('away', m.present === false);
+      if (m.present === true && idleOn) idleShow(false); }
+    else if (m.t === 'whisper') { document.documentElement.classList.toggle('whisper', !!m.on); }
+    else if (m.t === 'musicstate') { if (MUSIC.set) MUSIC.set(m); }
+    else if (m.t === 'mkt') { if ((m.ops || []).some(o => o.op === 'close')) { if (MKT.card) closeCard(MKT.card); } else if (MKT.ctl) MKT.ctl.apply(m.ops); else MKT.pending.push(...(m.ops || [])); }
+    else if (m.t === 'holo') { if (m.op === 'close_card') { if (HOLO.card) closeCard(HOLO.card); } else if (HOLO.ctl) HOLO.ctl.apply(m.op, m.id); }
+    else if (m.t === 'draw_step') { DRAWS.spoken = true; DRAWS.forEach(d => d.reveal(m.n - 1)); }
+    else if (m.t === 'holo_bullets') { if (HOLO.ctl && HOLO.ctl.setBullets) HOLO.ctl.setBullets(m.id, m.list || []); }
+    else if (m.t === 'mood') { moodT = (PREFS.feelings === false ? null : MOOD[m.v]) || [0, 1, 1]; }
     else if (m.t === 'listen') { handsfree = m.on; showMute(); }
     else if (m.t === 'muted') { muted = m.on; showMute(); }
     else if (m.t === 'status') showStatus(m.lines, m.active);
     else if (m.t === 'ui') setGhost(!!m.hidden);
     else if (m.t === 'guide') { const g = GUIDES[m.gid]; if (g) g.setStatus(m.status, m.state); if (m.step === 'next' && g) g.next(); }
     else if (m.t === 'action_result') { if (!m.result.ok) toast(m.result.error.toUpperCase()); }
-    else if (m.t === 'msg') { addMsg(m.role, m.text); touchAct(); }
-    else if (m.t === 'card') { if (POP) { if (window.__popReady) popAdd(m.card); } else if (!DOCK) { addCard(m.card); if (m.card.full) { const c = cards[cards.length - 1]; c && expandCard(c); } if (m.card.secret) { const c = cards[cards.length - 1]; setTimeout(() => c && closeCard(c), card.type === 'guide' ? 600000 : 60000); } } }   // a secret card (the pairing code) removes itself after 60 s
+    else if (m.t === 'msg') { addMsg(m.role, m.text); touchAct(); if (m.role === 'you') chatPush('me', m.text); else if (m.role !== 'sys') chatPush('ai', m.text); }
+    else if (m.t === 'card') { if (POP) { if (window.__popReady) popAdd(m.card); } else if (!DOCK) { addCard(m.card); if (m.card.full) { const c = cards[cards.length - 1]; c && expandCard(c); } if (m.card.secret) { const c = cards[cards.length - 1]; setTimeout(() => c && closeCard(c), m.card.type === 'guide' ? 600000 : 60000); } } }   // a secret card (the pairing code) removes itself after 60 s
     else if (m.t === 'embed') { if (!DOCK) embed(m); }
     else if (m.t === 'caption') { if (m.text) showCap(m.text); }
     else if (m.t === 'health') { showHealth(m.msg); }
@@ -992,14 +1275,14 @@ async function selftest() {
     log.push(tag + ' ' + JSON.stringify(c));
     if (expectCentre && (Math.abs(c.word[0] - want[0]) > 2 || Math.abs(c.word[1] - want[1]) > 2 || Math.abs(c.canvas[0] - want[0]) > 2 || Math.abs(c.canvas[1] - want[1]) > 2 || Math.abs(c.s - 1) > .02)) bad.push(tag);
     if (!expectCentre && (Math.abs(c.s - .4) > .03 || c.word[0] < W * .7)) bad.push(tag); };
-  const IDS = ['#menubtn', '#dock', '#status', '#cap', '#i-chat', '#i-cam', '#i-map', '#i-music', '#i-mute', '#orbhit'];
+  const IDS = ['#menubtn', '#dock', '#status', '#cap', '#i-cam', '#i-map', '#i-music', '#i-mute', '#orbhit'];
   const sig = () => IDS.map(i => { const e = $(i), r = e.getBoundingClientRect(), vis = getComputedStyle(e).display !== 'none'; return [i, vis, Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; });
-  const MENU = ['#menu', '#m-hide', '#m-theme', '#m-win', '#m-term', '#m-claude', '#m-files', '#m-launch', '#m-scratch', '#m-clip', '#m-act', '#m-hist', '#m-clear', '#m-src', '#m-set'], SETT = ['#settings', '#s-voice', '#s-speed', '#s-follow', '#s-snd'];
+  const MENU = ['#menu', '#m-hide', '#m-theme', '#m-win', '#m-term', '#m-claude', '#m-files', '#m-launch', '#m-clear', '#m-set'], SETT = ['#settings', '#s-voice', '#s-speed', '#s-follow', '#s-snd'];
   setTheme('jarvis', false); setMode('idle'); openMenu(true); $('#settings').classList.add('on'); await frames(5);
   const sigM = () => [...IDS, ...MENU, ...SETT].map(i => { const e = $(i), r = e.getBoundingClientRect(), vis = getComputedStyle(e).display !== 'none'; return [i, vis, Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]; });
   const a = sigM(); const cornerD = el => { const r = el.getBoundingClientRect(), pts = [[0, 0], [W, 0], [0, H], [W, H]];
     return Math.min(...pts.map(([x, y]) => Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom)))); };
-  const CTRL = ['#menubtn', '#i-chat', '#i-cam', '#i-map', '#i-music', '#i-mute', '#status', ...MENU.slice(1), ...SETT.slice(1)]; let minD = 1e9, minWho = '';
+  const CTRL = ['#menubtn', '#i-cam', '#i-map', '#i-music', '#i-mute', '#status', ...MENU.slice(1), ...SETT.slice(1)]; let minD = 1e9, minWho = '';
   CTRL.forEach(i => { const e = $(i), d = cornerD(e), hit = (() => { const r = e.getBoundingClientRect(); return Math.min(r.width, r.height); })(); if (d < minD) { minD = d; minWho = i; } if (d < 60) bad.push(`corner: ${i} only ${d.toFixed(0)}px from a corner`); });
   log.push(`controls: nearest to any corner is ${minWho} at ${minD.toFixed(0)}px (need >= 60)`);
   openMenu(false); setTheme('rose', false); setMode('idle'); openMenu(true); $('#settings').classList.add('on'); await frames(5); const b = sigM(); openMenu(false);

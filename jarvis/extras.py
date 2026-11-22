@@ -25,7 +25,7 @@ def _cfg_dir():
 
 def NOTES():
     """Plain text in the jarvis folder (data/notes.txt, git-ignored). An older notes file in the config folder is moved over once."""
-    p = config.ROOT / "data" / "notes.txt"
+    p = config.DATA / "notes.txt"
     old = os.path.join(_cfg_dir(), "notes.txt")
     if not p.exists() and os.path.exists(old):
         p.parent.mkdir(exist_ok=True)
@@ -38,7 +38,7 @@ def NOTES():
 
 
 # ----------------------------------------------------------------------------- notes
-REM_PATH = config.ROOT / "data" / "reminders.json"
+REM_PATH = config.DATA / "reminders.json"
 
 
 def save_pending():
@@ -90,7 +90,7 @@ def delete_last_note():
     return re.sub(r"^\d{4}-\d\d-\d\d \d\d:\d\d\s+", "", gone)
 
 
-LIST_PATH = config.ROOT / "data" / "list.json"
+LIST_PATH = config.DATA / "list.json"
 
 
 def list_items():

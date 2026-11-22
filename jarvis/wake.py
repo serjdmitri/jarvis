@@ -18,19 +18,22 @@ from collections import deque
 
 import numpy as np
 
-from . import audio, kws, personas, stt
+from . import audio, kws, personas, settings, stt
 
 RATE = 16000
 FRAME = 480                      # 30 ms
 MAX_WAKE_CLIP_S = 4.0            # a wake phrase (+ optional short request) is short; longer speech is just conversation, never transcribed
 MIN_SPEECH_S = 0.35
 WAKE_END_SILENCE_S = 0.5
-CMD_END_SILENCE_S = 1.0
+CMD_END_SILENCE_S = 0.45          # after a longer request (see CMD_END_SHORT_S for one-word ones)
+CMD_END_SHORT_S = 0.6
+PATIENCE = {"fast": (0.45, 0.6), "normal": (0.8, 1.0), "patient": (1.2, 1.5)}      # (after a normal request, after a very short one): the "listening patience" setting
 CMD_START_TIMEOUT_S = 6.0
 ANSWER_WAIT_S = 8.0               # when the assistant asked you something: wait this long for the answer, no wake word
 CMD_MAX_S = 25.0
 MIN_GAP_S = 1.0                  # at most one whisper wake transcription per this long
 BUDGET_S, BUDGET_WINDOW_S = 8.0, 60.0    # whisper may run at most this many seconds per window (it burns ~2.5 cores while it runs)
+KWS_FLUSH_QUIET = 2                # frames (120 ms) of quiet after speech: then the spotter is fed half a second of silence at once, so it decides NOW instead of waiting ~0.25 s of real time for its chunk to fill
 KWS_PREROLL_S = 0.6              # the spotter only runs while there is speech-like energy; it is first fed this much earlier audio
 KWS_HANG_S = 1.2                 # ... and keeps running this long after the last loud frame
 MAX_BACKOFF_S = 2.5               # (the duty-cycle budget below is the real CPU governor; a long back-off would starve real wake phrases)
@@ -222,7 +225,7 @@ class HandsFree:
         pre = deque(maxlen=10)
         clip, in_speech, speech_frames, silence_frames, run, last_loud_t = [], False, 0, 0, 0, 0.0
         was_busy = False
-        kws_on_until, kws_active = 0.0, False
+        kws_on_until, kws_active, kws_quiet, kws_flushed = 0.0, False, 0, True
         for f in self.stream.frames():
             if self.stop_evt.is_set():
                 break
@@ -266,6 +269,13 @@ class HandsFree:
                         for (_, pf) in list(self.ring)[-int(KWS_PREROLL_S * RATE / FRAME) - 1:-1]:
                             fired += self.spotter.feed(pf)
                     fired += self.spotter.feed(f)
+                    if loud:
+                        kws_quiet, kws_flushed = 0, False
+                    else:
+                        kws_quiet += 1
+                        if kws_quiet == KWS_FLUSH_QUIET and not kws_flushed:
+                            kws_flushed = True
+                            fired += self.spotter.feed(np.zeros(8000, np.int16))      # the end of a phrase is known: flush the spotter's chunk (about 120 ms after the last word instead of ~300)
                 else:
                     kws_active = False
                 if fired:
@@ -444,7 +454,7 @@ class HandsFree:
             else:
                 a.on_msg("sys", "(no request heard)"); a._set("idle")
             return
-        if (c["speech"] >= 8 and c["silence"] * FRAME / RATE >= CMD_END_SILENCE_S) or el > CMD_MAX_S:
+        if (c["speech"] >= 8 and c["silence"] * FRAME / RATE >= PATIENCE.get(settings.get("listen_patience"), PATIENCE["fast"])[0 if c["speech"] >= 20 else 1]) or el > CMD_MAX_S:
             data, self.cap = np.concatenate(c["clip"]), None
             if self.spotter:
                 self.spotter.reset()                            # fresh context after a request

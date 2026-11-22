@@ -15,7 +15,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 REDIRECT = "http://127.0.0.1:8888/callback"
-SCOPES = "user-read-playback-state user-modify-playback-state user-read-currently-playing streaming"
+SCOPES = "user-read-playback-state user-modify-playback-state user-read-currently-playing streaming playlist-read-private"
 AUTH, TOKEN, API = "https://accounts.spotify.com/authorize", "https://accounts.spotify.com/api/token", "https://api.spotify.com/v1"
 DEVICE_NAME = "Jarvis"
 TEST_TRACK = "spotify:track:11dFghVXANMlKmJXsNCbNl"

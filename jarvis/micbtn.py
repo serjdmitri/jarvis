@@ -139,9 +139,10 @@ class MicBtn(Gtk.Application):
                     async for m in ws:
                         if m.type == aiohttp.WSMsgType.TEXT:
                             d = json.loads(m.data)
-                            if d.get("t") == "hello" and d.get("persona") in THEMES:
+                            if d.get("t") == "hello" and (d.get("persona") in THEMES or d.get("personas")):
+                                self.accents = {x["id"]: x["accent"] for x in d.get("personas", []) if isinstance(x, dict) and "id" in x and "accent" in x}
                                 self.theme = d["persona"]
-                            elif d.get("t") == "persona" and d.get("v") in THEMES:
+                            elif d.get("t") == "persona" and (d.get("v") in THEMES or d.get("v") in getattr(self, "accents", {})):
                                 self.theme = d["v"]
                             elif d.get("t") == "state":
                                 self.live = d.get("state") == "listening" and "dictation" in str(d.get("detail", ""))
@@ -150,8 +151,17 @@ class MicBtn(Gtk.Application):
             self.ws = None
             await asyncio.sleep(1.5)
 
+    def _acc(self):
+        a = getattr(self, "accents", {}).get(self.theme)
+        if a and len(a) == 7:
+            try:
+                return tuple(int(a[i:i + 2], 16) / 255 for i in (1, 3, 5))
+            except ValueError:
+                pass
+        return THEMES.get(self.theme, THEMES["jarvis"])
+
     def draw(self, da, cr, w, h):
-        acc = (1.0, 0.25, 0.25) if (self.live or self.dictating) else THEMES[self.theme]
+        acc = (1.0, 0.25, 0.25) if (self.live or self.dictating) else self._acc()
         cx = cy = SIZE / 2
         pulse = 0.5 + 0.5 * math.sin(time.time() * 6) if (self.live or self.dictating) else 0.0
         cr.set_source_rgba(0.02, 0.03, 0.07, 0.88)

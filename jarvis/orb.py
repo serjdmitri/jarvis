@@ -83,6 +83,27 @@ BTN_R = 13           # the small round expand button
 BTN_SHOW_S = 4.0     # how long it stays after a tap (always while hovering)
 
 
+def avoid_corner():
+    """"top-right" (default: the cracked corner), "top-left", "bottom-left", "bottom-right" or None. Read from the settings file each time, so a change applies at once."""
+    try:
+        v = json.load(open(os.path.join(os.path.dirname(cfg_path()), "settings.json"))).get("orb_avoid", "top-right")
+    except Exception:
+        v = "top-right"
+    return v if v in ("top-right", "top-left", "bottom-left", "bottom-right") else None
+
+
+STEP = 170           # one "move left/right/up/down"
+
+
+def target(op, cx, cy):
+    """Where "move to the top / middle / corner / left / right / up / down" or "reset" puts the orb (centre, px), before snapping."""
+    sw, sh = screen_size()
+    h = ORB // 2
+    dx, dy = default_pos()
+    return {"corner": (dx, dy), "reset": (dx, dy), "top": (cx, EDGE + h), "bottom": (cx, sh - EDGE - h), "middle": (sw // 2, sh // 2), "left": (EDGE + h, cy), "right": (sw - EDGE - h, cy),
+            "up": (cx, cy - STEP), "down": (cx, cy + STEP), "leftstep": (cx - STEP, cy), "rightstep": (cx + STEP, cy)}.get(op, (cx, cy))
+
+
 def snap(cx, cy):
     """Gently settle a dropped orb: inside the screen, snapped to the edge gap near an edge, and out of the cracked top-right corner."""
     sw, sh = screen_size()
@@ -97,10 +118,18 @@ def snap(cx, cy):
         cy = lo_y
     if hi_y - cy < SNAP:
         cy = hi_y
-    if cx > sw - CRACK and cy < CRACK:                       # inside the cracked corner: slide down (or left) out of it
-        cy = CRACK if (CRACK - cy) <= (cx - (sw - CRACK)) else cy
-        if cy < CRACK:
-            cx = sw - CRACK
+    corner = avoid_corner()
+    if corner:                                               # inside the corner to keep clear: slide out of it (along the shorter way)
+        left, top = "left" in corner, "top" in corner
+        x_in = cx < CRACK if left else cx > sw - CRACK
+        y_in = cy < CRACK if top else cy > sh - CRACK
+        if x_in and y_in:
+            dx = (CRACK - cx) if left else (cx - (sw - CRACK))
+            dy = (CRACK - cy) if top else (cy - (sh - CRACK))
+            if dy <= dx:
+                cy = CRACK if top else sh - CRACK
+            else:
+                cx = CRACK if left else sw - CRACK
     return int(cx), int(cy)
 
 
@@ -127,6 +156,7 @@ class Orb(Gtk.Application):
         super().__init__(application_id="local.jarvis.orb")
         self.win = None
         self.theme, self.mode, self.muted = "jarvis", "idle", False
+        self.pers = {}                                         # persona id -> {"base", "accent", "word"} (from the server)
         self.level = 0.0            # smoothed audio level 0..1
         self.target = 0.0
         self.spin, self.t0 = 0.0, time.time()
@@ -321,7 +351,8 @@ class Orb(Gtk.Application):
         t = m.get("t")
         if t == "hello":
             self.mode = m.get("state", "idle")
-            self.theme = m.get("persona") if m.get("persona") in THEMES else self.theme
+            self.pers = {p["id"]: p for p in m.get("personas", []) if isinstance(p, dict) and "id" in p}
+            self.theme = m.get("persona") if (m.get("persona") in THEMES or m.get("persona") in self.pers) else self.theme
             self.muted = bool(m.get("muted"))
         elif t == "state":
             self.mode = m.get("state", "idle")
@@ -331,8 +362,20 @@ class Orb(Gtk.Application):
             if (m.get("src") == "mic" and self.mode == "listening") or (m.get("src") == "out" and self.mode == "speaking"):
                 self.target = max(self.target * 0.5, float(m.get("v", 0)))
         elif t == "persona":
-            if m.get("v") in THEMES:
+            if m.get("v") in THEMES or m.get("v") in self.pers:
                 self.theme = m["v"]
+        elif t == "orb" and self.win:                      # voice / settings: "move to the top", "reset the orb"
+            self.cx, self.cy = snap(*target(str(m.get("op")), self.cx, self.cy))
+            self.flip = self.cx < screen_size()[0] / 2
+            self.apply_position()
+            GLib.timeout_add(100, self.set_input_region)
+            if m.get("op") == "reset":
+                try:
+                    os.unlink(cfg_path())
+                except OSError:
+                    pass
+            else:
+                save_pos(self.cx, self.cy)
         elif t == "muted":
             self.muted = bool(m.get("on"))
         elif t == "embed":
@@ -363,12 +406,26 @@ class Orb(Gtk.Application):
             self.da.queue_draw()
         return True
 
+    def look(self, name):
+        """The drawn look of a persona: its base look (jarvis or rose) with the persona's colour and name."""
+        p = self.pers.get(name) or {}
+        th = dict(THEMES.get(p.get("base") or name, THEMES["jarvis"]))
+        a = str(p.get("accent") or "")
+        if len(a) == 7 and a[0] == "#":
+            try:
+                th["acc"] = tuple(int(a[i:i + 2], 16) / 255 for i in (1, 3, 5))
+            except ValueError:
+                pass
+        if p.get("word"):
+            th["word"] = str(p["word"])[:12]
+        return th
+
     def static_layer(self, th_name, dim, w, h, ox, oy):
         """Glow, dark disc, rings and the word never change while idle: draw them once into a surface and just paint it."""
         key = (th_name, dim, ox)
         if key in self._cache:
             return self._cache[key]
-        th = THEMES[th_name]
+        th = self.look(th_name)
         acc, white, disc = th["acc"], th["white"], th["disc"]
         sf = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
         cr = cairo.Context(sf)
@@ -412,7 +469,7 @@ class Orb(Gtk.Application):
         return sf
 
     def draw(self, da, cr, w, h):
-        th = THEMES[self.theme]
+        th = self.look(self.theme)
         acc, white = th["acc"], th["white"]
         now = time.time()
         cx, cy = self.orb_xy()

@@ -787,6 +787,7 @@ def ensure_popup():
             return
         addr = win[0]
         POPUP["addr"] = addr
+        threading.Thread(target=_close_popup_strays, args=(addr,), daemon=True).start()
     else:
         addr = cur["address"]
     sw, sh = monitor_size()
@@ -796,6 +797,21 @@ def ensure_popup():
     POPUP["timer"] = threading.Timer(600 if POPUP.get("big") else 40, close_popup)
     POPUP["timer"].daemon = True
     POPUP["timer"].start()
+
+
+def _close_popup_strays(addr):
+    """Chromium may open a SECOND window next to the popup (a restored app window): it opens tiled and made your full-screen terminal shrink to half and stay that way. Close any other
+    window of the popup's own process, a few times in the first 3 seconds (the glitch hunt found this with logs/windows.log)."""
+    for _ in range(6):
+        time.sleep(0.5)
+        cs = clients()
+        me = next((c for c in cs if c["address"] == addr), None)
+        if not me:
+            return
+        for c in cs:
+            if c.get("pid") == me.get("pid") and c["address"] != addr:
+                _dispatch('hl.dsp.window.close({ %s })' % _win(c["address"]))
+                print("[popup] closed a stray window of the popup browser", flush=True)
 
 
 def close_popup():

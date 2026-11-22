@@ -89,6 +89,9 @@ class StreamBrain:
         self.proc.stdin.flush()
 
     def ask(self, text, image=None, on_delta=None, on_event=None, timeout=90):
+        fake = os.environ.get("JARVIS_FAKE_BRAIN_DOWN")
+        if fake and os.path.exists(fake):                           # tests only: a flag file makes the brain "stop responding"
+            raise RuntimeError("the claude process exited. (test)")
         """on_event(kind, detail): 'tool' (starting a WebSearch/WebFetch), 'tool_done', 'cap' (tool-time cap hit), 'text'."""
         content = text
         if image:

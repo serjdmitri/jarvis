@@ -7,13 +7,17 @@ from the Go and opens links or files here. Standard library only.
   python3 jarvis_inbox.py ask "what is on my calendar"   -> ask the Go and print its answer
   python3 jarvis_inbox.py note "buy milk" | link https://... | clip   -> hand a note, a link or your clipboard to the Go
 """
-import getpass, hashlib, json, os, subprocess, sys, time, urllib.parse, urllib.request
+import getpass, hashlib, ipaddress, json, os, re, subprocess, sys, time, urllib.parse, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jarvis_pair as jp
 
 CFG = os.path.expanduser("~/.jarvis-inbox/config.json")
 DEST = os.path.expanduser("~/Downloads/Jarvis")
-EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".mov", ".m4v", ".pdf", ".txt", ".md"}
+INBOX = os.path.expanduser("~/Downloads/Jarvis Inbox")      # everything received is SAVED here and never opened, run or unzipped
+QUARANTINE = os.path.join(INBOX, "Quarantine")
+BLOCKED = {".app", ".pkg", ".dmg", ".command", ".sh", ".exe", ".bat", ".cmd", ".scr", ".jar", ".js", ".vbs", ".ps1", ".msi", ".com", ".py", ".pl", ".rb", ".workflow", ".terminal", ".dylib", ".so", ".apk", ".ipa"}
+FETCH_MAX = 500 * 1024 * 1024
+EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".mov", ".m4v", ".webm", ".pdf", ".txt", ".md"}
 MAX_BYTES = 25 * 1024 * 1024
 SERVER = "https://ntfy.sh"
 
@@ -24,6 +28,51 @@ def safe_url(u):
             and len(u) <= 2000 and "\n" not in u and " " not in u)
 
 
+def private_http(u):
+    """http:// to a private (home network) address only, with a one-time path."""
+    p = urllib.parse.urlsplit(u)
+    try:
+        ip = ipaddress.ip_address(p.hostname or "")
+    except ValueError:
+        return False
+    return p.scheme == "http" and (ip.is_private or ip.is_loopback) and not p.username and re.fullmatch(r"/o/[A-Za-z0-9_-]{20,80}", p.path or "") is not None and len(u) < 300
+
+
+def fetch(payload):
+    """The Go offers a file at a one-time local URL. Check everything, save it, never open it. -> (result, detail)."""
+    name = re.sub(r"[^\w .()\[\]+-]", "_", os.path.basename(str(payload.get("name", "")) or "file"))[:120] or "file"
+    size = int(payload.get("size") or 0)
+    if not private_http(payload.get("url", "")):
+        return "dropped", "the file address is not on your home network"
+    if not 0 < size <= FETCH_MAX:
+        return "dropped", "file too big (over 500 MB) or empty"
+    ext = os.path.splitext(name)[1].lower()
+    blocked = ext in BLOCKED
+    folder = QUARANTINE if blocked else INBOX
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f"{time.strftime('%Y%m%d-%H%M%S')}-{name}")
+    h, n = hashlib.sha256(), 0
+    try:
+        with urllib.request.urlopen(urllib.request.Request(payload["url"], headers={"User-Agent": "jarvis-mac"}), timeout=60) as r, open(path, "wb") as f:
+            while chunk := r.read(1 << 16):
+                n += len(chunk)
+                if n > size or n > FETCH_MAX:
+                    break
+                h.update(chunk); f.write(chunk)
+    except Exception as e:
+        try: os.remove(path)
+        except OSError: pass
+        return "dropped", "could not fetch it (" + type(e).__name__ + "): the link works once and for 10 minutes"
+    if n != size or h.hexdigest() != payload.get("sha256"):
+        os.remove(path)
+        return "dropped", "the file did not match its checksum (changed on the way)"
+    if sys.platform == "darwin":                                     # keep macOS's own "downloaded from the internet" warning on it
+        subprocess.run(["xattr", "-w", "com.apple.quarantine", f"0081;{int(time.time()):x};JarvisInbox;", path], check=False, capture_output=True)
+    if blocked:
+        return "opened", f"saved in Quarantine, NOT opened ({ext} files are never opened): {name}"
+    return "opened", f"saved in Jarvis Inbox: {name}"
+
+
 def handle(payload, event):
     """-> (result, reason). result is "opened" or "dropped"; reason says why in plain words."""
     t = payload.get("type")
@@ -32,6 +81,8 @@ def handle(payload, event):
             return "dropped", "not an https link (or it has a password or spaces in it)"
         subprocess.run(["open", payload["url"]], check=False)
         return "opened", "link"
+    if t == "fetch":
+        return fetch(payload)
     if t == "open_file":
         att = event.get("attachment") or {}
         a = urllib.parse.urlsplit(att.get("url", ""))
@@ -57,8 +108,7 @@ def handle(payload, event):
         if h.hexdigest() != payload.get("sha256"):
             os.remove(path)
             return "dropped", "the file did not match its checksum (changed on the way)"
-        subprocess.run(["open", path], check=False)
-        return "opened", "file " + name
+        return "opened", "file saved in " + DEST + " (not opened): " + name
     return "dropped", "unknown kind of message"
 
 

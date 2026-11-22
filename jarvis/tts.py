@@ -47,13 +47,49 @@ def _scale(voice):
 CACHE = config.RUN_DIR / "ttscache"      # short, frequently repeated lines (acks, greetings, wake replies) are synthesized once
 
 
+def prune_cache(max_files=500, max_age_days=30):
+    """The pre-synthesised lines are cached per voice AND per speed, so the cache grows every time you change the speed: keep the newest 500 and drop anything older than a month."""
+    import time as _t
+    try:
+        files = sorted(CACHE.glob("*.wav"), key=lambda f: f.stat().st_mtime, reverse=True)
+    except OSError:
+        return 0
+    n = 0
+    for i, f in enumerate(files):
+        try:
+            if i >= max_files or _t.time() - f.stat().st_mtime > max_age_days * 86400:
+                f.unlink()
+                n += 1
+        except OSError:
+            pass
+    return n
+
+
 def _cache_file(text, voice):
     import hashlib
     return CACHE / (hashlib.sha1((str(voice) + "|" + f"{SPEED.get(str(voice), 1.0):.2f}" + "|" + text).encode()).hexdigest() + ".wav")
 
 
-def synth(text, path, voice=None):
+def synth(text, path, voice=None, mood=None):
+    """Write the speech for `text` to a wav. A mood (see moods.py) nudges speed and pitch a little; moods skip the cache (it holds neutral lines)."""
     voice = str(voice or _current)
+    if mood:
+        from . import moods
+        sp, pi = moods.VOICE.get(mood, (1, 1))
+        with _lock:
+            import numpy as _np
+            from piper import SynthesisConfig
+            base = _scale(voice)
+            tmp = path + ".m"
+            with wave.open(tmp, "wb") as w:
+                _get(voice).synthesize_wav(text, w, syn_config=SynthesisConfig(length_scale=base * pi / sp))      # slower when pitched up, so the net pace is the mood's speed
+            with wave.open(tmp) as r:
+                rate, ch, sw, raw = r.getframerate(), r.getnchannels(), r.getsampwidth(), r.readframes(r.getnframes())
+            os.unlink(tmp)
+            data = moods.retune(_np.frombuffer(raw, dtype=_np.int16), rate, mood)
+            with wave.open(path, "wb") as w:
+                w.setnchannels(ch); w.setsampwidth(sw); w.setframerate(rate); w.writeframes(data.tobytes())
+        return path
     cf = _cache_file(text, voice) if len(text) <= 70 else None
     if cf is not None and cf.exists():                     # instant: no synthesis
         import shutil
@@ -88,13 +124,20 @@ def warm():
 
 
 def clean(text):
-    """Strip markdown noise that sounds bad when spoken."""
+    """Strip markdown noise that sounds bad when spoken (and any mood tag)."""
+    from . import moods
+    text = moods.strip(text)
     text = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]", "", text)   # emoji: nothing sensible to say
     return re.sub(r"[*_`#>]+", "", text).strip()
 
 
 def split_sentences(text):
-    return [p for p in re.split(r"(?<=[.!?])\s+|\n+", text.strip()) if p.strip()]
+    parts = [p for p in re.split(r"(?<=[.!?])\s+|\n+", text.strip()) if p.strip()]
+    if parts and len(parts[0]) > 46:                       # a long first sentence is cut at its first comma (a natural pause): the voice starts after the short piece is made, not after the whole sentence
+        m = re.search(r"^(.{14,40}?[,:;])\s+(.{12,})$", parts[0])
+        if m:
+            parts[0:1] = [m.group(1), m.group(2)]
+    return parts
 
 
 class Speaker:
@@ -104,6 +147,8 @@ class Speaker:
     def __init__(self, on_play=None):
         self.synthq, self.playq = queue.Queue(), queue.Queue()
         self.on_play = on_play
+        self.on_mood = None                 # called with the mood of each sentence as it starts playing (None = neutral)
+        self.mood = None
         self.on_fail = None                 # called when pw-play itself fails: the app shows a "No sound: <reason>" card
         self.muted = False
         self.last_end = 0.0                  # wall time the last sentence finished playing (conversation mode opens the mic from here)
@@ -119,13 +164,16 @@ class Speaker:
         self._kill()
         return self.gen
 
-    def add(self, text, gen):
+    def add(self, text, gen, mood=None):
+        from . import moods, settings
+        text, tagged = moods.take(text)
         text = clean(text)
         if not text or gen != self.gen:
             return
+        mood = (tagged or mood or moods.guess(text)) if settings.get("feelings") is not False else None
         with self._plock:
             self.pending += 1
-        self.synthq.put((gen, text))
+        self.synthq.put((gen, text, mood))
 
     def say(self, text):
         g = self.begin()
@@ -154,15 +202,15 @@ class Speaker:
 
     def _synth_worker(self):
         while True:
-            gen, text = self.synthq.get()
+            gen, text, mood = self.synthq.get()
             if gen != self.gen:
                 self._done()
                 continue
             fd, path = tempfile.mkstemp(suffix=".wav", prefix="jarvis-tts-")
             os.close(fd)
             try:
-                synth(text, path)
-                self.playq.put((gen, path))
+                synth(text, path, mood=mood)
+                self.playq.put((gen, path, mood))
             except Exception as e:
                 print("tts error:", e)
                 os.unlink(path)
@@ -170,9 +218,12 @@ class Speaker:
 
     def _play_worker(self):
         while True:
-            gen, path = self.playq.get()
+            gen, path, mood = self.playq.get()
             try:
                 if gen == self.gen:
+                    self.mood = mood
+                    if self.on_mood:
+                        self.on_mood(mood)
                     if self.on_play:
                         self.on_play(gen, path)
                     if self.muted:   # stay "speaking" for the sentence's length, but make no sound
@@ -181,7 +232,8 @@ class Speaker:
                         while time.time() < end and gen == self.gen:
                             time.sleep(0.05)
                     else:
-                        self.player = subprocess.Popen(["pw-play", path], stderr=subprocess.DEVNULL)
+                        from . import whisper_mode
+                        self.player = subprocess.Popen(["pw-play"] + (["--volume", str(whisper_mode.GAIN)] if whisper_mode.active() else []) + [path], stderr=subprocess.DEVNULL)
                         if self.player.wait() not in (0, -15, -9) and gen == self.gen and self.on_fail:       # not killed by us (a new turn): the player could not play at all
                             self.on_fail()
             except Exception as e:
@@ -191,3 +243,5 @@ class Speaker:
                     os.unlink(path)
                 self.last_end = time.time()
                 self._done()
+                if self.pending <= 0 and self.on_mood:
+                    self.on_mood(None)

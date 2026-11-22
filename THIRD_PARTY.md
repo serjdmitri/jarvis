@@ -38,3 +38,13 @@ Maps drawn by Jarvis show "© OpenStreetMap contributors" (and "Esri" on the fal
 
 ## Trademarks
 "Jarvis", "Rose", Marvel, Disney, Spotify, YouTube, Apple, Mac and all other names belong to their owners. This is an independent hobby project and is not affiliated with, endorsed by or sponsored by any of them.
+
+| three.js r160 (`jarvis/web/vendor/three`) | 3D cards | MIT, licence file included |
+| Wikimedia Commons model files | optional real 3D models (only free licences; credit shown on the card) | each file's own licence |
+| TradingView Lightweight Charts 4.1.3 (`jarvis/web/vendor/lwc`) | the Markets Desk chart | Apache-2.0, licence file included |
+| Yahoo Finance chart/search endpoints (unofficial, keyless), Finnhub (optional free key), SEC EDGAR | market data, only when you ask | each provider's terms; the desk labels the source of every number |
+
+| MapLibre GL JS 4.7.1 | BSD-3-Clause | Vector map in the map card (vendored, jarvis/web/vendor/maplibre) |
+| OpenFreeMap | free, no key (OpenStreetMap data, ODbL) | Vector map tiles, style, sprite and fonts, fetched through a local cache |
+| Open-Meteo | free, no key (CC BY 4.0) | Weather |
+| Photon (Komoot) | free, no key | Place search |

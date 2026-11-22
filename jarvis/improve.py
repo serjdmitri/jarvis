@@ -12,8 +12,8 @@ from pathlib import Path
 from . import config, updater
 
 ROOT = config.ROOT
-LOG = ROOT / "data" / "friction.jsonl"
-STATE = ROOT / "data" / "improve.json"
+LOG = config.DATA / "friction.jsonl"
+STATE = config.DATA / "improve.json"
 WORK = Path(os.path.expanduser("~/jarvis-improve"))
 PROTECTED = ("jarvis/terminal.py", "jarvis/actions.py", "jarvis/intents.py", "jarvis/mac.py", "jarvis/jarvis_pair.py", "jarvis/phone.py", "jarvis/spotify.py", "jarvis/syshold.py",
              "jarvis/improve.py", "jarvis/updater.py", "jarvis/publish.py", "jarvis/watchdog.py", "jarvis/config.py", "jarvis/settings.py", "jarvis/opener.py", "jarvis/phoneuse.py", "jarvis/voiceapi.py",

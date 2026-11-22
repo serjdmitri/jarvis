@@ -12,13 +12,22 @@ PATH = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "jarvi
 _cache = None
 
 
+_mtime = 0.0
+
+
 def load():
-    global _cache
-    if _cache is None:
+    """The settings dict. Re-read whenever the file changed on disk (another process, or you editing it), so a stale copy can never overwrite newer values."""
+    global _cache, _mtime
+    try:
+        m = PATH.stat().st_mtime
+    except OSError:
+        m = 0.0
+    if _cache is None or m != _mtime:
         try:
             _cache = json.loads(PATH.read_text())
         except (OSError, ValueError):
             _cache = {}
+        _mtime = m
     return _cache
 
 
@@ -29,8 +38,23 @@ def get(key, default=None):
 
 
 def update(**kw):
-    s = dict(load()); s.update(kw)
+    """Read-modify-write under a file lock, starting from what is on disk RIGHT NOW (not from a copy in memory), written atomically."""
+    import fcntl
+    global _cache, _mtime
     PATH.parent.mkdir(parents=True, exist_ok=True)
-    PATH.write_text(json.dumps(s, indent=2))
-    global _cache
-    _cache = s
+    with open(str(PATH) + ".lock", "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        try:
+            cur = json.loads(PATH.read_text())
+        except (OSError, ValueError):
+            cur = {}
+        cur.update(kw)
+        tmp = str(PATH) + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(cur, f, indent=2)
+        os.replace(tmp, PATH)
+        _cache = cur
+        try:
+            _mtime = PATH.stat().st_mtime
+        except OSError:
+            _mtime = 0.0

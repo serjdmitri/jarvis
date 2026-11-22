@@ -130,6 +130,10 @@ def my_location():
     t = settings.get("loc_temp") or {}
     if t.get("date") == _today() and valid(t.get("lat"), t.get("lon")):
         return {"lat": t["lat"], "lon": t["lon"], "label": t.get("label", "here"), "source": "today"}
+    from . import location
+    fx = location.latest()                                  # a real GPS fix from the iPhone beats every guess
+    if fx and valid(fx["lat"], fx["lon"]):
+        return {"lat": fx["lat"], "lon": fx["lon"], "label": "your iPhone", "source": "iphone", "acc": fx.get("acc"), "age": location.age_words(fx["t"])}
     lat, lon = settings.get("home_lat"), settings.get("home_lon")
     if valid(lat, lon):
         return {"lat": lat, "lon": lon, "label": (settings.get("home_area") or "home").split(",")[0], "source": "home"}
@@ -243,7 +247,7 @@ def sources_card():
     return {"speech": speech, "cards": [{"type": "list", "title": "Where I think you are", "items": lines}]}
 
 
-SOURCE_WORDS = {"home": "home", "today": "set today", "wifi": "Wi-Fi", "ip": "IP guess, rough", "ip (confirmed)": "IP, confirmed"}
+SOURCE_WORDS = {"iphone": "iPhone GPS", "home": "home", "today": "set today", "wifi": "Wi-Fi", "ip": "IP guess, rough", "ip (confirmed)": "IP, confirmed"}
 
 
 def location_line(me):
@@ -396,6 +400,17 @@ def places_spec(kind):
     spec = new_spec(origin={"lat": me["lat"], "lon": me["lon"], "label": me["label"], "source": me["source"]}, places=ps, title=f"{kind.title()} near {me['label']}")
     near = ps[0]
     return spec, f"I found {len(ps)}. The nearest is {near['name']}, {fmt_dist(near['dist_m'])} away."
+
+
+def me_spec():
+    """The MAP button: no place asked for, so show me, at street level, with how sure we are. -> spec dict (not stored)."""
+    me = my_location()
+    spec = {"id": "me", "mode": "car", "origin": None, "dest": None, "routes": {}, "places": [], "title": "Map", "imperial": imperial(), "live": True}
+    if me:
+        acc = me.get("acc") or {"iphone": 40, "today": 300, "home": 500, "wifi": 200}.get(me["source"], 8000)
+        spec["origin"] = {"lat": me["lat"], "lon": me["lon"], "label": me["label"], "source": me["source"], "acc": acc, "age": me.get("age", "")}
+        spec["approx"] = me["source"] in ("ip", "ip (confirmed)")
+    return spec
 
 
 def confirm_spec(g):

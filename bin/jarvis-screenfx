@@ -1,0 +1,11 @@
+#!/bin/sh
+# Overlays drawn on the real screen (see jarvis/screenfx.py):  bin/jarvis-screenfx point X Y W H "caption" | draw | bubble X Y W H "text" | stop [mode]
+# One instance per mode: starting a new "point" replaces the old one (the new ring appears first, so there is no flicker).
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
+mode="$1"
+if [ "$mode" = "stop" ]; then pkill -f "^\.venv/bin/python -m jarvis\.screenfx ${2:-}"; exit 0; fi
+old=$(pgrep -f "^\.venv/bin/python -m jarvis\.screenfx $mode" | head -1)
+LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so .venv/bin/python -m jarvis.screenfx "$@" &
+pid=$!
+if [ -n "$old" ]; then sleep 0.35; kill "$old" 2>/dev/null; fi
+wait $pid

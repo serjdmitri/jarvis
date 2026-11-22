@@ -10,7 +10,7 @@ import uuid
 
 from . import config
 
-PATH = config.ROOT / "data" / "memory.json"
+PATH = config.DATA / "memory.json"
 STOP = set("a an the is are was were be been am i you he she it we they my your his her our their me to of in on at for with and or but not no do does did can could would should will "
            "what who when where why how which that this these those about tell please just really very some any there here from by as if so than then also have has had get got "
            "remember know like likes usual favourite favorite called name".split())
@@ -33,9 +33,17 @@ def looks_secret(text):
 
 def _load():
     try:
-        return json.loads(PATH.read_text(encoding="utf-8"))
+        facts = json.loads(PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
+    from . import settings
+    days = settings.get("memory_days", 30)                      # facts about you are deleted after 30 days by default (setting memory_days; 0 = keep)
+    if isinstance(days, (int, float)) and days > 0:
+        keep = [f for f in facts if time.time() - f.get("t", time.time()) < days * 86400]
+        if len(keep) != len(facts):
+            _save(keep)
+            return keep
+    return facts
 
 
 def _save(facts):

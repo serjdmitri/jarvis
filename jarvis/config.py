@@ -1,4 +1,5 @@
 import os
+import pathlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -10,6 +11,7 @@ BRAIN = os.environ.get("JARVIS_BRAIN", "stream")              # stream (one long
 SPECULATE = os.environ.get("JARVIS_SPECULATE", "0") == "1"    # opt-in: transcribe during pauses while key is held (only pays if you linger on the key >1s)
 HANDSFREE = os.environ.get("JARVIS_HANDSFREE", "1") == "1"      # wake phrases ("Hey Jarvis"); the SLEEP button / jarvisctl listen off stops the mic entirely
 ACK = os.environ.get("JARVIS_ACK", "1") == "1"                # beep when you release the key
+DATA = pathlib.Path(os.environ["JARVIS_DATA_DIR"]) if os.environ.get("JARVIS_DATA_DIR") else ROOT / "data"      # a test server points this at a throwaway folder
 SHOTS_DIR = ROOT / "shots"
 RUN_DIR = ROOT / "run"          # cwd for claude -p, keeps it away from other project context
 SOCK = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "jarvis.sock"
@@ -25,7 +27,10 @@ CARDS_PROMPT = (
     "with ONE JSON block on its own line, like {\"show\":[{\"type\":\"map\",\"title\":\"Eiffel Tower\",\"query\":\"Eiffel Tower, Paris\"}]}. "
     "Card types: text {type,title,text}; list {type,title,items:[strings]}; map {type,title,query}; "
     "chart {type,title,kind:\"line\" or \"bar\",labels:[strings],values:[numbers]}; "
-    "image {type,title,src} where src is an https URL or an absolute local file path. "
+    "image {type,title,src} where src is an https URL or an absolute local file path; "
+    "explain {type,title,kind,key,...} a small drawing that makes an answer clear, use it when the user asks you to explain something or asks about how something works or happened: "
+    "key is the ONE sentence to underline; kind \"diagram\" adds nodes:[{id,label}] and edges:[[from_id,to_id,label]] (up to 8 nodes), kind \"timeline\" adds events:[{when,text}] (up to 6), "
+    "kind \"labelled\" adds src (an image you were given) and labels:[{x,y,text}] with x,y from 0 to 1, kind \"spin3d\" adds shape (cube, sphere, pyramid or ring) and caption, kind \"draw\" (a cycle, flow or diagram that does not need 3D) adds elements (up to 40) like {t:\"arrow\",x1,y1,x2,y2,label,s}, {t:\"circle\",x,y,r,label,s}, {t:\"box\",x,y,w,h,label,s}, {t:\"point\",x,y,label,s}, {t:\"curve\",pts:[[x,y]...],s}, {t:\"text\",x,y,text,s} with all coordinates from 0 to 1 and s = the number of the spoken sentence (0,1,2...) that reveals it, plus bullets (up to 4 short points). "
     "After a web search, ALWAYS end with a show block: a list card of the 3 to 5 best options (each item short: name, then a few words why) with \"sources\":[up to 3 URLs], and a map card for the single most relevant place. "
     "For plain chat or simple facts, use no cards. Speak only the sentences before the JSON: never read the JSON aloud or mention it. "
     "To open a website, search or app on the user's computer, ONLY when they ask you to, say a few words (like Opening YouTube) and add an open key to the same JSON: "

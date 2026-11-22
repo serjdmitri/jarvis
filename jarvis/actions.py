@@ -259,7 +259,7 @@ def _phonecam_preview(payload, assistant):
         _pc("error", "Save the address first.")
         return {"message": "no address"}
     if assistant.on_card:
-        assistant.on_card({"type": "livecam", "title": "Phone camera (live)", "url": u})
+        assistant.on_card({"type": "livecam", "title": "Phone camera (live)", "url": "/api/look/stream"})        # the shared stream: the phone sees one viewer
     return {"message": "preview opened"}
 
 
@@ -573,3 +573,305 @@ def _launch_item(payload, assistant):
 @action("clip_copy")
 def _clip_copy(payload, assistant):
     return {"message": "ok"}
+
+
+# ----------------------------------------------------------------------------- reminders and promises (card buttons)
+def _refresh(assistant, kind):
+    from . import buddy
+    if assistant is not None and assistant.on_card:
+        assistant.on_card(buddy.reminders_card() if kind == "rem" else buddy.promises_card())
+
+
+@action("rem_pause")
+def _rem_pause(payload, assistant):
+    from . import buddy
+    buddy.update_recurring(str(payload.get("id")), paused=True)
+    _refresh(assistant, "rem")
+
+
+@action("rem_resume")
+def _rem_resume(payload, assistant):
+    from . import buddy
+    buddy.update_recurring(str(payload.get("id")), paused=False)
+    _refresh(assistant, "rem")
+
+
+@action("rem_delete")
+def _rem_delete(payload, assistant):
+    from . import buddy
+    buddy.delete_recurring(str(payload.get("id")))
+    _refresh(assistant, "rem")
+
+
+@action("prom_done")
+def _prom_done(payload, assistant):
+    from . import buddy
+    buddy.update_promise(str(payload.get("id")), done=True)
+    _refresh(assistant, "prom")
+
+
+@action("prom_snooze")
+def _prom_snooze(payload, assistant):
+    import time
+    from . import buddy
+    buddy.update_promise(str(payload.get("id")), due=time.time() + 3600, nudges=0, last_nudge=0)
+    _refresh(assistant, "prom")
+
+
+@action("prom_delete")
+def _prom_delete(payload, assistant):
+    from . import buddy
+    buddy.delete_promise(str(payload.get("id")))
+    _refresh(assistant, "prom")
+
+
+@action("prom_auto")
+def _prom_auto(payload, assistant):
+    from . import settings
+    settings.update(auto_promises=not settings.get("auto_promises"))
+    _refresh(assistant, "prom")
+
+
+# ----------------------------------------------------------------------------- Spotify playback (cards and the music card): structured, no text from the brain reaches a shell
+def _music_push(assistant, st):
+    from . import opener, spotify_cli
+    if st.get("item"):
+        opener.NOTIFY({"t": "musicstate", **{k: v for k, v in spotify_cli.music_card(st).items() if k not in ("type", "gid", "title")}})
+
+
+@action("text_send")
+def _text_send(payload, assistant):
+    import threading as _th
+    _th.Thread(target=assistant.send_text_draft, daemon=True).start()
+    return {"message": "sending"}
+
+
+@action("text_cancel")
+def _text_cancel(payload, assistant):
+    from . import textmsg
+    textmsg.clear()
+    assistant.say("Cancelled. Nothing was sent.")
+    return {"message": "cancelled"}
+
+
+@action("learn_ctl")
+def _learn_ctl(payload, assistant):
+    from . import learn
+    op = str(payload.get("op"))
+    if op in ("right", "wrong"):
+        learn.record(op == "right")
+    c = learn.move(1) if op in ("next", "right", "wrong") else learn.move(-1) if op == "prev" else learn.card()
+    if c:
+        assistant.on_card(c)
+    return {"message": op}
+
+
+@action("bt_use")
+def _bt_use(payload, assistant):
+    from . import btspeaker
+    ok = btspeaker.use(int(payload.get("id", -1)))                    # only after YES: the button is the confirmation
+    assistant.say("Jarvis now plays through the speaker." if ok else "I couldn't switch to that speaker.")
+    return {"message": "ok" if ok else "failed"}
+
+
+@action("bt_back")
+def _bt_back(payload, assistant):
+    from . import btspeaker
+    ok = btspeaker.back()
+    assistant.say("Back on the Go's speaker." if ok else "I couldn't switch the speaker.")
+    return {"message": "ok" if ok else "failed"}
+
+
+@action("bt_check")
+def _bt_check(payload, assistant):
+    from . import btspeaker
+    assistant.on_card(btspeaker.card())
+    return {"message": "checked"}
+
+
+@action("music_open")
+def _music_open(payload, assistant):
+    """The MUSIC button. Playing or connected: the now-playing card. Nothing yet: ONE card with two big choices (play now with no account, or connect Spotify), remembering the choice."""
+    from . import music, spotify, spotify_cli, settings
+    if spotify.connected():
+        st = spotify_cli.status()
+        if st.get("item"):
+            assistant.on_card(spotify_cli.music_card(st))
+            return {"message": "now playing"}
+    if music.STATE["active"] and music.STATE["queue"]:
+        assistant.on_card(music.card())
+        return {"message": "now playing"}
+    sp = "Spotify: connected" if spotify.connected() else "Spotify: not connected"
+    assistant.on_card({"type": "choice", "gid": "music-choice", "title": "MUSIC", "status": sp + "  ·  YouTube Music: ready, no account needed", "choices": [
+        {"label": "PLAY NOW, NO ACCOUNT", "sub": "YouTube Music. Works right away: then just say \"play Taylor Swift\".", "action": "music_choice", "payload": {"mode": "youtube"}},
+        {"label": "CONNECT SPOTIFY", "sub": "Needs Spotify Premium. A few guided steps, one at a time, in plain words.", "action": "music_choice", "payload": {"mode": "spotify"}}]})
+    return {"message": "choice card"}
+
+
+@action("music_choice")
+def _music_choice(payload, assistant):
+    from . import settings, spotify
+    mode = "spotify" if payload.get("mode") == "spotify" else "youtube"
+    settings.update(music_pref=mode)
+    if mode == "spotify":
+        assistant.on_card(spotify.guide_card())
+        return {"message": "spotify setup"}
+    assistant.say("Music is ready. Tell me what to play, for example: play Taylor Swift.")
+    return {"message": "youtube"}
+
+
+@action("spotify_status")
+def _spotify_status(payload, assistant):
+    from . import spotify_cli
+    _music_push(assistant, spotify_cli.status())
+
+
+@action("spotify_ctl")
+def _spotify_ctl(payload, assistant):
+    from . import spotify_cli
+    op = str(payload.get("op"))
+    from . import spotify as _sp
+    if not _sp.connected():                                         # the YouTube queue: the same buttons send the same words as your voice
+        words = {"pause": "pause the music", "resume": "resume the music", "next": "next song", "previous": "previous song", "vol_up": "turn the volume up", "vol_down": "turn the volume down"}
+        if op in words:
+            import threading as _th
+            _th.Thread(target=assistant.ask_text, args=(words[op],), daemon=True).start()
+        return {"ok": op in words}
+    cmd = {"op": "volume", "delta": 10} if op == "vol_up" else {"op": "volume", "delta": -10} if op == "vol_down" else {"op": op}
+    if cmd["op"] not in ("pause", "resume", "next", "previous", "volume"):
+        return {"ok": False}
+    r = spotify_cli.run(cmd)
+    import time
+    time.sleep(0.4)
+    _music_push(assistant, spotify_cli.status())
+    return {"message": r.get("speech", "")}
+
+
+@action("spotify_play")
+def _spotify_play(payload, assistant):
+    from . import spotify_cli
+    uri = str(payload.get("uri", ""))
+    if not spotify_cli.parse_link(uri):
+        return {"ok": False}
+    r = spotify_cli.run({"op": "play", "target": uri})
+    if assistant is not None and assistant.on_card:
+        for c in r.get("cards", []):
+            assistant.on_card(c)
+    return {"message": r.get("speech", "")}
+
+
+@action("spotify_devices")
+def _spotify_devices(payload, assistant):
+    from . import spotify_cli
+    r = spotify_cli.run({"op": "devices"})
+    if assistant is not None and assistant.on_card:
+        for c in r.get("cards", []):
+            assistant.on_card(c)
+
+
+@action("spotify_device")
+def _spotify_device(payload, assistant):
+    import re
+    from . import spotify, spotify_cli
+    name = str(payload.get("name") or "")[:60]
+    if payload.get("default"):
+        spotify_cli.set_default_device(name)
+    did = str(payload.get("id") or "")
+    if re.fullmatch(r"[A-Za-z0-9]{10,64}", did):
+        _, err = spotify._api("PUT", "/me/player", {"device_ids": [did], "play": not payload.get("default")})
+        return {"message": err or ("Default set to " + name if payload.get("default") else "Playing on " + name)}
+    return {"ok": False}
+
+
+@action("spotify_setup")
+def _spotify_setup(payload, assistant):
+    from . import spotify
+    if assistant is not None and assistant.on_card:
+        assistant.on_card(spotify.guide_card())
+
+
+@action("typebox_open")
+def _typebox_open(payload, assistant):
+    """The TYPE BOX button in the menu: same as the shortcut."""
+    import subprocess
+    from . import config, personas
+    subprocess.Popen([str(config.ROOT / "bin" / "jarvis-typebox"), assistant.persona, personas.PERSONAS[assistant.persona]["name"]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+# ----------------------------------------------------------------------------- Show me how / Circle to ask (buttons)
+@action("howto_next")
+def _howto_next(payload, assistant):
+    assistant.howto_next()
+
+
+@action("howto_stop")
+def _howto_stop(payload, assistant):
+    assistant.howto_stop()
+
+
+@action("howto_ask")
+def _howto_ask(payload, assistant):
+    """The SHOW ME HOW button: asks what you want to do, then listens for the answer without a wake word."""
+    import threading
+    def go():
+        assistant.expect = {"kind": "howto_goal", "text": ""}
+        assistant.say("What do you want to do?", wait=True)
+        assistant._conversation_open(wait=10.0)
+    threading.Thread(target=go, daemon=True).start()
+
+
+@action("circle_open")
+def _circle_open(payload, assistant):
+    """The CIRCLE button: the overlay opens at once; draw a circle and ask out loud, in either order."""
+    assistant.circle_start()
+
+
+@action("orb_reset")
+def _orb_reset(payload, assistant):
+    from . import opener
+    opener.NOTIFY({"t": "orb", "op": "reset"})
+
+
+@action("holo_send_export")
+def _holo_send_export(payload, assistant):
+    """Send the newest exported picture/video of a model to the Mac through the signed inbox (allowed file types and size limit apply there)."""
+    import os
+    path = getattr(assistant, "last_export", None)
+    if not path or not os.path.exists(path):
+        return {"ok": False, "message": "Nothing exported yet."}
+    import threading
+    threading.Thread(target=assistant.run_mac, args=({"file": path},), daemon=True).start()
+    return {"message": "Sending to your Mac."}
+
+
+@action("models_clear")
+def _models_clear(payload, assistant):
+    from . import models3d
+    n = models3d.clear_cache()
+    if assistant is not None and assistant.on_card:
+        assistant.on_card({"type": "text", "title": "3D model cache", "text": f"Cleared {n // 2 if n else 0} cached model{'s' if n != 2 else ''}."})
+
+
+# ----------------------------------------------------------------------------- Markets desk (read-only: nothing here can trade)
+@action("mkt_key")
+def _mkt_key(payload, assistant):
+    from . import markets
+    ok, msg = markets.save_key(str(payload.get("value", "")))
+    return {"ok": ok, "message": msg}
+
+
+@action("mkt_contact")
+def _mkt_contact(payload, assistant):
+    import re
+    from . import settings
+    v = re.sub(r"[^A-Za-z0-9@._+ -]", "", str(payload.get("value", "")))[:80].strip()
+    settings.update(edgar_contact=v or None)
+    return {"message": "Contact saved for SEC filings." if v else "Contact cleared."}
+
+
+@action("mkt_open")
+def _mkt_open(payload, assistant):
+    from . import mktdesk
+    if assistant.on_card:
+        assistant.on_card(mktdesk.desk_card())

@@ -4,6 +4,10 @@ import json, os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from jarvis import brain, core, intents, maps, personas, skills
 
+CASES_3D = [("show me a V8 engine in 3D", "show_3d"), ("3D model of the solar system", "show_3d"), ("how does a jet engine work, show it in 3D", "show_3d"), ("build me a model of a house", "show_3d"),
+            ("show me a hologram of a heart", "show_3d"), ("show me an atom in 3D", "show_3d"), ("make a 3d model of a bridge", "show_3d"), ("show me a red panda in 3D", "show_3d"),
+            ("show me the earth and moon in 3D", "show_3d"), ("build a model of a water molecule", "show_3d"),
+            ("show it on the map", "show_map"), ("send it to my Mac", "send_to_mac"), ("what is the weather", "answer"), ("show me pictures of a panda", "show_images"), ("text me the address", "send_to_phone"), ("how does a heart work", "answer")]
 CASES = [
     ("Show Starbucks on the map", "show_map"), ("show it on the map", "show_map"), ("put it on the map", "show_map"), ("map it", "show_map"),
     ("show it on the Mac", "show_map"), ("where is the nearest pharmacy", "show_map"), ("find a coffee shop near me", "show_map"), ("where is the Eiffel Tower", "show_map"),
@@ -12,7 +16,7 @@ CASES = [
     ("show me how to tie a tie", "show_video"), ("play the Dune trailer", "show_video"), ("show me a video of a cat playing piano", "show_video"),
     ("send that to my Mac", "send_to_mac"), ("text me the address", "send_to_phone"), ("send it to my phone", "send_to_phone"),
     ("open the terminal", "open_app"), ("open YouTube", "open_app"),
-    ("who won the football match last night", "search_web"), ("what's the latest news about the Mars mission", "search_web"),
+    ("who won the football match last night", "search_web"), ("what's the latest news about the Mars mission", "answer"),
     ("what is two plus two", "answer"), ("tell me a joke", "answer"), ("how are you", "answer"),
 ]
 FIRST = {"show_map": ("show_map",), "directions": ("show_map",)}
@@ -21,11 +25,16 @@ FIRST = {"show_map": ("show_map",), "directions": ("show_map",)}
 def local_intent(text):
     r = skills.handle(text, "jarvis")
     if not r:
-        return None
+        from jarvis import holo
+        return "show_3d" if holo.parse_open(text) else None
+    if r.get("holo_build") or any(c.get("type") == "scene3d" for c in r.get("cards", [])): return "show_3d"
     o = r.get("open") or {}
     if o.get("action") == "show_map":
         sp = maps.SPECS.get(o.get("id"), {})
         return "directions" if str(sp.get("title", "")).startswith("Route") else "show_map"
+    if r.get("send"): return "send_to_phone" if r["send"]["to"] == "phone" else "send_to_mac"
+    if r.get("playvideo"): return "show_video"
+    if any(c.get("type") == "gallery" for c in r.get("cards", [])): return "show_images"
     if r.get("macsend") == "report_phone": return "send_to_phone"
     if r.get("macsend"): return "send_to_mac"
     if r.get("phonesend"): return "send_to_phone"

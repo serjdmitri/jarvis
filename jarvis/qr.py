@@ -27,6 +27,10 @@ def make(url):
 
 def parse_command(text):
     low = text.lower().strip(" .?!")
+    m = re.fullmatch(r"(?:please )?(?:show|make|give me|display|generate)(?: me)? (?:a )?qr(?: code)?(?: for| of| to)? (?:the (?:link|address|website|site) )?(https?://\S+|(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?:/\S*)?)", re.sub(r"\s+dot\s+", ".", low))
+    if m:                                                           # a link you say: "make a qr code for example dot org"
+        u = m.group(1)
+        return {"kind": "link", "url": u if u.startswith("http") else "https://" + u}
     if re.fullmatch(r"(?:please )?(?:show|make|give me|display|generate)(?: me)? (?:a )?qr(?: code)?(?: for| of)?(?: this| that| it| the (?:link|page|map|video|route))?|(?:please )?qr code(?: for this| for that)?", low):
         return {"kind": "qr"}
     return None

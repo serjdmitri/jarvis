@@ -32,15 +32,45 @@ def kind_of(name):
     return {"hey": "hey", "wakeup": "wakeup", "daddys": "home"}.get(name.split("_")[0]) or ("awake" if name.endswith("_awake") else None)
 
 
+OWNER = {"hey_jarvis": "jarvis", "wakeup_jarvis": "jarvis", "jarvis_awake": "jarvis", "hey_rose": "rose", "wakeup_rose": "rose", "rose_awake": "rose"}
+
+
+def all_phrases(shared=()):
+    """The wake phrases of every persona (the built-in Jarvis and Rose use the tuned ones above; the others get "HEY <NAME>", "WAKE UP <NAME>", "<NAME> ARE YOU AWAKE"),
+    plus a few shared ones you choose (any persona answers). Only the ACTIVE persona's phrases (and the shared ones) wake it: see persona_of()."""
+    import re
+    from . import personas
+    out = dict(PHRASES)
+    for pid, p in personas.PERSONAS.items():
+        if pid in ("jarvis", "rose"):
+            continue
+        w = re.sub(r"[^A-Z ]", "", p["name"].upper()).strip()
+        out[f"hey_{pid}"] = ([f"HEY {w}"], 2.0, THRESH)
+        out[f"wakeup_{pid}"] = ([f"WAKE UP {w}"], 2.0, THRESH)
+        out[f"{pid}_awake"] = ([f"{w} ARE YOU AWAKE"], 2.0, THRESH)
+        OWNER.update({f"hey_{pid}": pid, f"wakeup_{pid}": pid, f"{pid}_awake": pid})
+    for i, ph in enumerate(shared or ()):
+        t = re.sub(r"[^A-Z' ]", "", str(ph).upper()).strip()
+        if 3 <= len(t) <= 30:
+            out[f"hey_shared{i}"] = ([t], 2.0, THRESH)                     # kind "hey": it wakes whichever persona is active
+    return out
+
+
 def persona_of(name):
-    return "jarvis" if "jarvis" in name else "rose" if "rose" in name else None   # None = either (daddy's home)
+    return OWNER.get(name)                                  # None = shared (daddy's home, your own shared phrases): any persona answers
+
+
+def _shared():
+    from . import settings
+    v = settings.get("wake_shared")
+    return v if isinstance(v, list) else []
 
 
 class Spotter:
     def __init__(self, phrases=None, threads=1):
         import sentencepiece as spm
         import sherpa_onnx
-        phrases = phrases or PHRASES
+        phrases = phrases or all_phrases(_shared())
         sp = spm.SentencePieceProcessor(model_file=str(MODEL / "bpe.model"))
         lines = []
         for name, (texts, boost, thr) in phrases.items():
@@ -54,6 +84,10 @@ class Spotter:
             tokens=str(MODEL / "tokens.txt"), encoder=str(MODEL / f"encoder-{tag}"), decoder=str(MODEL / f"decoder-{tag}"),
             joiner=str(MODEL / f"joiner-{tag}"), keywords_file=self._kw_path, num_threads=threads,
             keywords_score=1.0, keywords_threshold=0.25, num_trailing_blanks=1)
+        try:
+            os.unlink(self._kw_path)                      # the spotter has read it: do not leave one file in /tmp per start
+        except OSError:
+            pass
         self.stream = self.spotter.create_stream()
 
     def feed(self, samples):

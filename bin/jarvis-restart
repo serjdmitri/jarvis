@@ -1,0 +1,10 @@
+#!/bin/sh
+# Restart the Jarvis server, but only if the code passes a preflight check (compiles, no undefined names, imports). The watchdog brings the new one up.
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
+PY=.venv/bin/python; [ -x "$PY" ] || PY=python3
+exec "$PY" - <<'PYEOF'
+from jarvis import updater
+ok, msg = updater.restart_server()
+print(msg)
+raise SystemExit(0 if ok else 1)
+PYEOF

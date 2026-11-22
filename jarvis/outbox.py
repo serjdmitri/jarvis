@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import config
 
-LOG = config.ROOT / "data" / "outbox.jsonl"
+LOG = config.DATA / "outbox.jsonl"
 _lock = threading.Lock()
 
 
@@ -126,6 +126,10 @@ def resolve(a, what, to):
     def look():
         p = a.look.get("path") if a.look.get("open") else None
         return {"kind": "file", "value": p, "label": "the look picture"} if p and os.path.exists(p) else None
+    def song():
+        from . import spotify_cli
+        u = spotify_cli.now_url()
+        return {"kind": "url", "value": u, "label": "the song"} if u else None
     def page():
         u = opener.EMBED.get("page_url") or video.LAST.get("url")
         return {"kind": "url", "value": u, "label": ("the video" if video.LAST.get("url") == u else "the page")} if u else None
@@ -151,7 +155,7 @@ def resolve(a, what, to):
         except OSError:
             t = ""
         return {"kind": "text", "value": t, "label": "your notes"} if t.strip() else None
-    order = {"look": [look], "map": [page], "video": [page], "link": [page], "report": [report], "answer": [answer], "clipboard": [clip], "note": [note], "address": [page, answer],
+    order = {"look": [look], "map": [page], "video": [song, page], "link": [page], "report": [report], "answer": [answer], "clipboard": [clip], "note": [note], "address": [page, answer],
              "current": [look, page, report, answer]}[what]
     for f in order:
         r = f()

@@ -8,7 +8,7 @@ import urllib.request
 
 from . import config, jarvis_pair as jp, mac
 
-INBOX = config.ROOT / "data" / "inbox.jsonl"
+INBOX = config.DATA / "inbox.jsonl"
 CAPS = {"ask": 300, "note": 2000, "clip": 2000, "link": 500}
 _seen = set()
 _stamps = []

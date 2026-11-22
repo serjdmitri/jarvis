@@ -1,0 +1,11 @@
+#!/bin/sh
+# A throwaway Jarvis for tests: its own port (8799), its own settings, data and control socket in a temp folder, no orb, no kiosk, no hands-free mic, no phone endpoint.
+# Your real settings, memory, notes and Jarvis session are never touched. Prints the port; stop it with Ctrl-C. Test scripts should use http://127.0.0.1:8799
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 1
+T=$(mktemp -d -p "${TMPDIR:-/tmp}" jarvis-test.XXXXXX)
+mkdir -p "$T/cfg" "$T/data" "$T/run"; chmod 700 "$T/run"
+for f in pipewire-0 pulse; do [ -e "$XDG_RUNTIME_DIR/$f" ] && ln -s "$XDG_RUNTIME_DIR/$f" "$T/run/$f"; done      # audio still works
+export JARVIS_FAKE_BRAIN_DOWN="$T/fake-brain" JARVIS_FAKE_OFFLINE="$T/fake-offline" JARVIS_DEBUG_MOODS=${JARVIS_DEBUG_MOODS:-} XDG_CONFIG_HOME="$T/cfg" XDG_RUNTIME_DIR="$T/run" JARVIS_DATA_DIR="$T/data" JARVIS_PORT=8799 JARVIS_VOICE_PORT=8798 JARVIS_NO_DESKTOP=1 JARVIS_HANDSFREE=0
+echo "test server: http://127.0.0.1:8799   (throwaway data in $T)"
+trap 'rm -rf "$T"' EXIT INT TERM
+.venv/bin/python -m jarvis.webapp

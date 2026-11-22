@@ -4,7 +4,7 @@ Live detection with a local model (option b) is only a researched option (about 
 import json
 import re
 
-FRESH = re.compile(r"\b(look at (?:this|that|it|these|those)|take a look|what do you see|what can you see|can you see (?:this|that|it)|what am i (?:holding|looking at|showing)|identify (?:this|that|it)|what(?:'s| is) (?:this|that)(?: thing| object)?|what are (?:these|those)|read (?:this|that) (?:label|sign|text|for me))\b", re.I)
+FRESH = re.compile(r"\b(look at (?:this|that|it|these|those)|look at (?:the|my) screen|show (?:me )?my screen|show me (?:what (?:is|'s) (?:in front|here|there)|what i(?:'m| am) holding|what you see|this thing)|what(?:'s| is) in front of (?:me|you|the camera)|(?:use|through) the (?:phone )?camera|take a look|what do you see|what can you see|can you see (?:this|that|it)|what am i (?:holding|looking at|showing)|identify (?:this|that|it)|what(?:'s| is) (?:this|that)(?: thing| object)?|what are (?:these|those)|read (?:this|that) (?:label|sign|text|for me))\b", re.I)
 BOXING = re.compile(r"^(?:please )?(?:box|outline|highlight|point out|label|circle|find) (?:all |every |each |the |a |an )?(.+)$", re.I)
 
 PROMPT = ("[LOOK: a picture from the user's camera or screen is attached. Answer in one or two short spoken sentences (the first under 10 words). Then end your reply with ONE JSON line: "
@@ -39,10 +39,23 @@ def validate_boxes(raw, limit=8):
         w, h = min(w, 1 - x), min(h, 1 - y)                              # clamped to the picture
         if w < 0.02 or h < 0.02:
             continue
-        out.append({"name": name, "x": round(x, 4), "y": round(y, 4), "w": round(w, 4), "h": round(h, 4)})
+        if w * h > 0.92:                                                 # a box around the whole picture says nothing: dropped
+            continue
+        b = {"name": name, "x": round(x, 4), "y": round(y, 4), "w": round(w, 4), "h": round(h, 4)}
+        if any(_iou(b, o) > 0.85 for o in out):                          # the same thing boxed twice
+            continue
+        out.append(b)
         if len(out) >= limit:
             break
     return out
+
+
+def _iou(a, b):
+    ix = max(0.0, min(a["x"] + a["w"], b["x"] + b["w"]) - max(a["x"], b["x"]))
+    iy = max(0.0, min(a["y"] + a["h"], b["y"] + b["h"]) - max(a["y"], b["y"]))
+    inter = ix * iy
+    union = a["w"] * a["h"] + b["w"] * b["h"] - inter
+    return inter / union if union else 0.0
 
 
 def extract(reply):
@@ -60,6 +73,8 @@ def extract(reply):
 def parse_command(text, state):
     """Voice commands for the LOOK view -> {"op": ..., ...} or None. `state` = the assistant's look state ({"open": bool, "boxes": [...]})."""
     low = (text or "").lower().strip(" .?!")
+    if re.fullmatch(r"(?:please )?(?:scan|list|find) (?:everything|all|all the (?:things|stuff|items)) (?:on|in) (?:my |the )?(?:desk|table|workbench|bench)|what(?:'s| is) (?:all )?(?:on|in) my (?:desk|table|workbench|bench)|(?:please )?scan (?:my |the )?(?:desk|table|workbench|bench)", low):
+        return {"op": "box", "what": "everything on the desk, every separate item"}              # "scan everything on my desk": every visible item with a box
     if not state.get("open"):
         m = BOXING.match(low)
         return {"op": "box", "what": m.group(1)} if m and len(m.group(1)) < 40 and not re.match(r"(?:me|my|up|out|the map|a map|it)\b", m.group(1)) else None

@@ -5,8 +5,10 @@ import ipaddress
 import os
 import re
 import subprocess
+import threading
 import time
 import urllib.parse
+import urllib.request
 
 from . import config, settings
 
@@ -135,6 +137,14 @@ def grab(url=None, timeout=4, frames=8):
     if not u:
         raise RuntimeError("No phone camera address is set. Open SETTINGS > PHONE CAMERA.")
     config.SHOTS_DIR.mkdir(exist_ok=True)
+    if not url or u == get_url():                                      # the saved camera: one shared connection, never a second viewer
+        data = RELAY.frame(wait=max(timeout, 6))
+        path = str(config.SHOTS_DIR / f"shot-{int(time.time() * 1000)}.jpg")
+        with open(path, "wb") as f:
+            f.write(data)
+        for f in sorted(config.SHOTS_DIR.glob("shot-*.jpg"))[:-9]:
+            f.unlink()
+        return path
     tmp = tempfile.mkdtemp(prefix="phonecam-")
     try:
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-rw_timeout", str(int(timeout * 1000000)), "-i", u, "-frames:v", str(frames), "-vf", "scale='min(1280,iw)':-2", "-q:v", "3", os.path.join(tmp, "f%02d.jpg")]
@@ -162,7 +172,7 @@ def grab(url=None, timeout=4, frames=8):
 def setup_card():
     cur = get_url()
     return {"type": "guide", "gid": "phonecam", "title": "Phone camera", "full": True, "paged": False, "status": "Saved: " + ("yes" if cur else "no address yet"), "steps": [
-        {"n": 1, "text": "On your phone install a free app that shares its camera over Wi-Fi.", "hint": "Android: IP Webcam. Android or iPhone: DroidCam. Start its server and note the address it shows."},
+        {"n": 1, "text": "On your phone install a free app that shares its camera over Wi-Fi.", "hint": "Android: IP Webcam. Android or iPhone: DroidCam. Start its server and note the address it shows. Plainly: DroidCam on an iPhone only works while the app is open in front and the screen is awake (iOS pauses it otherwise). Set Auto-Lock to Never while it is plugged in, or use the photo Shortcut (no app needs to be open: see the iPhone voice card), or a USB webcam if you want it always on. The stream starts only when you ask me to look and stops afterwards."},
         {"n": 2, "text": "Type that address here (it must be on your own Wi-Fi):", "input": {"placeholder": "just the IP, e.g. 192.168.1.50", "label": "SAVE", "action": "phonecam_save"},
          "hint": "Type just the IP the app shows. I add http, the port (DroidCam 4747, IP Webcam 8080) and the video path for you, and show the full addresses I will try."},
         {"n": 3, "text": "Test it and look at it live:", "buttons": [{"label": "TEST", "action": "phonecam_test"}, {"label": "LIVE PREVIEW", "action": "phonecam_preview"}, {"label": "USE FOR LOOK", "action": "phonecam_use"}]}]}
@@ -176,3 +186,100 @@ def parse_command(text):
     if _re.fullmatch(r"(?:use|switch to) (?:my |the )?phone camera|look (?:with|through|using) (?:my |the )?phone", low):
         return {"kind": "use"}
     return None
+
+
+
+# ----------------------------------------------------------------------------- one reader for the phone (DroidCam allows ONE viewer at a time)
+class Relay:
+    """Reads the phone's MJPEG stream over ONE connection and keeps the newest JPEG; the LIVE view, the Phone Camera preview and a "what do you see" frame grab all take from it, so the
+    phone never sees a second viewer (it refuses one). Starts on the first consumer and stops 6 s after the last one leaves: the camera is off until needed."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.latest, self.t, self.n, self.consumers, self.err = None, 0.0, 0, 0, ""
+        self.thread, self.stop_at, self.url = None, 0.0, None
+
+    def _run(self, url):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "jarvis-local"})
+            with urllib.request.urlopen(req, timeout=6) as r:
+                buf = b""
+                while time.time() < self.stop_at or self.consumers > 0:
+                    chunk = r.read(16384)
+                    if not chunk:
+                        self.err = "the phone closed the stream"
+                        break
+                    buf += chunk
+                    while True:
+                        a = buf.find(b"\xff\xd8")
+                        b = buf.find(b"\xff\xd9", a + 2) if a >= 0 else -1
+                        if a < 0 or b < 0:
+                            break
+                        with self.lock:
+                            self.latest, self.t, self.n = buf[a:b + 2], time.time(), self.n + 1
+                        buf = buf[b + 2:]
+                    if len(buf) > 4_000_000:
+                        buf = b""
+                    if self.consumers <= 0 and time.time() > self.stop_at:
+                        break
+        except Exception as e:
+            self.err = "could not read the phone's video (" + type(e).__name__ + ")"
+        finally:
+            self.thread = None
+
+    def want(self, seconds=8):
+        """Make sure the reader runs for at least `seconds` more (a consumer holds it open longer)."""
+        url = get_url()
+        if not url:
+            raise RuntimeError("No phone camera address is set. Open SETTINGS > PHONE CAMERA.")
+        self.stop_at = max(self.stop_at, time.time() + seconds)
+        if self.thread is None or not self.thread.is_alive() or self.url != url:
+            self.err, self.latest, self.n, self.url = "", None, 0, url
+            self.thread = threading.Thread(target=self._run, args=(url,), daemon=True)
+            self.thread.start()
+
+    def frame(self, wait=8.0, skip=6, frames=6):
+        """A sharp JPEG: wait for the connection, skip the first `skip` frames (dark or blurry while the phone's exposure settles), take the sharpest of the next few. -> bytes. RuntimeError with the reason."""
+        self.want(wait + 4)
+        t0, got = time.time(), []
+        seen = -1
+        while time.time() - t0 < wait:
+            with self.lock:
+                n, f = self.n, self.latest
+            if f and n != seen:
+                seen = n
+                if n > skip:
+                    got.append(f)
+                    if len(got) >= frames:
+                        break
+            if self.err and not f:
+                break
+            time.sleep(0.04)
+        if not got:
+            raise RuntimeError(self.err or "timed out waiting for the phone's video")
+        return max(got, key=lambda b: _sharp_bytes(b))
+
+    def hold(self):
+        self.consumers += 1
+        self.want(8)
+
+    def release(self):
+        self.consumers = max(0, self.consumers - 1)
+        self.stop_at = time.time() + 6
+
+
+def _sharp_bytes(b):
+    """A cheap sharpness score for a JPEG: bigger files at the same size carry more fine detail."""
+    return len(b)
+
+
+RELAY = Relay()
+
+
+def explain(reason):
+    """Plain words for why the phone camera could not be read."""
+    r = (reason or "").lower()
+    if "no phone camera address" in r:
+        return "No phone camera is saved. Open settings and add its address."
+    return ("I can't reach the phone camera. Check that DroidCam is open and in front on the iPhone with the screen awake, that the phone is on the same Wi-Fi, "
+            "and that the address is right. Also close any other viewer of the stream.")

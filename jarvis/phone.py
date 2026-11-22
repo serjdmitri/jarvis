@@ -73,8 +73,12 @@ def validate(p):
         click = opener.clean_url(str(p["link"]))
         if not click:
             return None
+    if p.get("sms"):                                                  # a compose link with the words typed and NO recipient (Jarvis does not know numbers): you pick the person and press send
+        click = "sms:&body=" + urllib.parse.quote(str(p["sms"])[:300])
+        msg = msg or "Tap to open Messages with your text ready."
     attach = opener.clean_url(str(p["image"])) if p.get("image") else None
-    return {"title": title, "message": msg or click, "click": click, "attach": attach}
+    pri = str(p.get("priority") or "default")
+    return {"title": title, "message": msg or click, "click": click, "attach": attach, "priority": pri if pri in ("min", "low", "default", "high", "urgent") else "default"}
 
 
 def send(p):
@@ -86,7 +90,7 @@ def send(p):
     if time.time() - _last < 4:
         return {"ok": False, "message": "too many sends; wait a few seconds"}
     topic = get_topic()
-    headers = {"Title": _hdr(v["title"]), "Priority": "default", "User-Agent": "jarvis-local", "Tags": "jarvis"}      # tagged, so "anything new?" never reads our own sends back to you
+    headers = {"Title": _hdr(v["title"]), "Priority": v["priority"], "User-Agent": "jarvis-local", "Tags": "jarvis"}      # tagged, so "anything new?" never reads our own sends back to you
     if v["click"]:
         headers["Click"] = v["click"]
     if v["attach"]:

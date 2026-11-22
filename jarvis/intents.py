@@ -5,7 +5,7 @@ import urllib.parse
 
 from . import maps
 
-ALLOWED = ("show_map", "directions", "search_web", "show_images", "show_video", "send_to_mac", "send_to_phone", "open_app", "answer")
+ALLOWED = ("show_map", "directions", "search_web", "show_images", "show_video", "show_3d", "send_to_mac", "send_to_phone", "open_app", "answer")
 
 PROMPT = (
     " ROUTING: for every request end your reply with ONE JSON line {\"intent\":{\"name\":...,...}} (you may combine it with show/open keys only when told above). "
@@ -18,6 +18,8 @@ PROMPT = (
     "'Who won the match last night' -> {\"intent\":{\"name\":\"search_web\",\"query\":\"match result last night\"}}. NEVER use it, or any web search or Google page, for a 'show me' request.\n"
     "show_images {query}: pictures. 'Show me a red panda' -> {\"intent\":{\"name\":\"show_images\",\"query\":\"red panda\"}}; 'what does a tapir look like' -> same with 'tapir'.\n"
     "show_video {query}: a video. 'Show me how to tie a tie' -> {\"intent\":{\"name\":\"show_video\",\"query\":\"how to tie a tie\"}}; 'play the Dune trailer' -> {\"intent\":{\"name\":\"show_video\",\"query\":\"Dune trailer\"}}.\n"
+    "show_3d {subject, scene}: a 3D model the user can turn and click. ONLY when they say 3D, model or hologram. 'Show me a V8 engine in 3D' -> {\"intent\":{\"name\":\"show_3d\",\"subject\":\"V8 engine\",\"scene\":{\"title\":\"V8 engine\",\"unit\":\"cm\",\"parts\":[...]}}}; "
+    "'how does a jet engine work, show it in 3D' -> same with the jet engine's parts. The scene follows the spec you are given when asked to build one; 'show it on the map' and 'send it to my Mac' are NEVER show_3d.\n"
     "send_to_mac / send_to_phone {what: \"current\"}: ONLY when the user says send, text or share, to their Mac or phone. 'Send that to my Mac' -> {\"intent\":{\"name\":\"send_to_mac\",\"what\":\"current\"}}; "
     "'text me the address' -> {\"intent\":{\"name\":\"send_to_phone\",\"what\":\"current\"}}. 'Show', 'put on the map', 'map it' NEVER mean send.\n"
     "open_app {app}: open an app or website. 'Open the terminal' -> {\"intent\":{\"name\":\"open_app\",\"app\":\"terminal\"}}; 'open YouTube' -> {\"intent\":{\"name\":\"open_app\",\"app\":\"youtube\"}}.\n"
@@ -33,6 +35,13 @@ def validate(obj, user_text=""):
     if n not in ALLOWED:
         return None
     clean = {"name": n}
+    if n == "show_3d":
+        if not re.search(r"\b(3 ?d|three ?d|three dimensional|model|hologram|holographic)\b", user_text or "", re.I) or re.search(r"\b(on the map|send|text me)\b", user_text or "", re.I):
+            return None
+        clean["subject"] = re.sub(r"\s+", " ", str(obj.get("subject") or "")).strip()[:80]
+        if isinstance(obj.get("scene"), dict):
+            clean["scene"] = obj["scene"]                       # validated (clamped, capped, cleaned) by holo.validate_scene before anything is drawn
+        return clean
     for k in ("query", "to", "mode", "app", "what", "place"):
         if obj.get(k):
             clean[k] = re.sub(r"\s+", " ", str(obj[k])).strip()[:120]
@@ -56,6 +65,9 @@ def run(intent):
     n = intent["name"]
     if n == "answer":
         return None
+    if n == "show_3d":
+        from . import holo
+        return holo.run_intent(intent)
     if n in ("show_map", "directions") and maps.needs_confirm(maps.my_location()):
         me = maps.my_location()
         return {"speech": f"I only have a rough guess from your internet address: {me['label']}. Is that where you are? Say yes, or tell me where you are.", "expect": "confirmip"}

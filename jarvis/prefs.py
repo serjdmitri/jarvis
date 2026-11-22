@@ -4,25 +4,30 @@ import re
 
 from . import settings
 
-SPEED_MIN, SPEED_MAX, STEP = 0.7, 1.6, 0.15
-IDLE_CHOICES = (0.5, 1, 2, 5, 10, 30, 0)            # minutes; 0 = never
-DEFAULTS = {"show_heard": True, "large_text": False, "high_contrast": False, "update_check": False, "onboarded": False, "notify_phone_reminders": True, "phone_voice": False, "phone_voice_speak": False, "phone_control_from_phone": False, "term_wake": False, "machine_warnings": True, "auto_visuals": True, "stay_out": True, "idle_minutes": 5, "clock24": False, "clock_seconds": True, "followup": False}
+SPEED_MIN, SPEED_MAX, STEP = 0.7, 2.0, 0.15       # up to 2.0x (the default stays whatever you saved, e.g. 1.6x; each persona keeps its own)
+IDLE_CHOICES = (1, 2, 5, 10, 15, 30, 60, 0)            # minutes; 0 = never
+DEFAULTS = {"chimes": True, "feelings": True, "show_heard": True, "large_text": False, "high_contrast": False, "update_check": False, "onboarded": False, "notify_phone_reminders": True, "phone_voice": False, "phone_voice_speak": False, "phone_control_from_phone": False, "term_wake": False, "machine_warnings": True, "auto_visuals": True, "stay_out": True, "idle_minutes": 5, "clock24": False, "clock_seconds": True, "followup": False}
 
 
 def get(key):
     return settings.get(key, DEFAULTS.get(key))
 
 
+def _default(persona):
+    from . import personas
+    return personas.PERSONAS.get(persona, {}).get("speed", 1.0)
+
+
 def speed(persona):
     try:
-        return max(SPEED_MIN, min(SPEED_MAX, float(settings.get("speed_" + persona, 1.0))))
+        return max(SPEED_MIN, min(SPEED_MAX, float(settings.get("speed_" + persona, _default(persona)))))
     except (TypeError, ValueError):
         return 1.0
 
 
 def clean(key, value):
     """-> the validated value, or raises ValueError."""
-    if key in ("auto_visuals", "stay_out", "clock24", "clock_seconds", "machine_warnings", "term_wake", "phone_voice", "show_heard", "large_text", "high_contrast", "update_check", "onboarded", "notify_phone_reminders", "phone_voice_speak", "phone_control_from_phone"):
+    if key in ("auto_visuals", "chimes", "feelings", "auto_promises", "auto_3d", "markets_desk", "boot_anim", "camera_warnings", "keep_phone_photos", "stay_out", "clock24", "clock_seconds", "machine_warnings", "term_wake", "phone_voice", "show_heard", "large_text", "high_contrast", "update_check", "onboarded", "notify_phone_reminders", "phone_voice_speak", "phone_control_from_phone"):
         return bool(value)
     if key == "speed":
         v = round(float(value), 2)
@@ -33,6 +38,23 @@ def clean(key, value):
         v = int(float(value))
         if not 0 <= v <= 100:
             raise ValueError("volume out of range")
+        return v
+    if key == "listen_patience":
+        if value not in ("fast", "normal", "patient"):
+            raise ValueError("not a choice")
+        return value
+    if key == "orb_avoid":
+        if value not in ("top-right", "top-left", "bottom-left", "bottom-right", "none"):
+            raise ValueError("not a choice")
+        return value
+    if key == "typebox_key":
+        if value not in ("alt", "ctrl", "both", "off"):
+            raise ValueError("not a choice")
+        return value
+    if key == "chime_volume":
+        v = int(float(value))
+        if not 0 <= v <= 100:
+            raise ValueError("chime volume out of range")
         return v
     if key == "idle_minutes":
         v = float(value)
@@ -52,7 +74,7 @@ def _volume():
 
 
 def public(persona):
-    return {"volume": _volume(), "home": (settings.get("home_area") or "").split(",")[0][:60], "speed": speed(persona), "auto_visuals": bool(get("auto_visuals")), "machine_warnings": bool(get("machine_warnings")), "show_heard": bool(get("show_heard")), "large_text": bool(get("large_text")), "high_contrast": bool(get("high_contrast")), "term_wake": bool(get("term_wake")), "stay_out": bool(get("stay_out")), "idle_minutes": get("idle_minutes"),
+    return {"volume": _volume(), "home": (settings.get("home_area") or "").split(",")[0][:60], "speed": speed(persona), "auto_visuals": bool(get("auto_visuals")), "chimes": get("chimes") is not False, "chime_volume": int(settings.get("chime_volume", 60) or 0), "feelings": get("feelings") is not False, "auto_promises": bool(settings.get("auto_promises")), "auto_3d": bool(settings.get("auto_3d")), "markets_desk": settings.get("markets_desk") is not False, "camera_warnings": bool(settings.get("camera_warnings")), "boot_anim": settings.get("boot_anim") is not False, "keep_phone_photos": bool(settings.get("keep_phone_photos")), "typebox_key": settings.get("typebox_key") or "alt", "orb_avoid": settings.get("orb_avoid") or "top-right", "listen_patience": settings.get("listen_patience") or "fast", "whisper": __import__("jarvis.whisper_mode", fromlist=["x"]).active(), "auto_persona": settings.get("auto_persona") is not False, "say_switching": settings.get("say_switching") is not False, "machine_warnings": bool(get("machine_warnings")), "show_heard": bool(get("show_heard")), "large_text": bool(get("large_text")), "high_contrast": bool(get("high_contrast")), "term_wake": bool(get("term_wake")), "stay_out": bool(get("stay_out")), "idle_minutes": get("idle_minutes"),
             "clock24": bool(get("clock24")), "clock_seconds": bool(get("clock_seconds"))}
 
 

@@ -33,13 +33,39 @@ def _r(name):
         return None
 
 
-def save_calendar(url):
-    u = (url or "").strip().replace("webcal://", "https://")
-    if not re.fullmatch(r"https://[^\s]{10,500}", u) or ".ics" not in u and "ical" not in u.lower() and "calendar" not in u.lower():
-        return False, "That does not look like a calendar address. It should be the private iCal link (it starts with https:// and usually ends with .ics)."
-    _w600("calendar_url", u)
+def _cals():
+    """-> [(name, url)] from calendar_urls (and the older single calendar_url)."""
+    out = []
+    t = _r("calendar_urls")
+    for ln in (t or "").splitlines():
+        if "\t" in ln:
+            n, u = ln.split("\t", 1)
+            out.append((n.strip()[:24] or "calendar", u.strip()))
+    old = _r("calendar_url")
+    if old and old not in [u for _, u in out]:
+        out.append(("calendar", old))
+    return out
+
+
+def save_calendar(value):
+    """"https://...ics" or "work https://...ics": adds ANOTHER calendar (you can connect Google, iCloud, Outlook and work calendars side by side). Stored privately, never shown again."""
+    v = (value or "").strip().replace("webcal://", "https://")
+    m = re.fullmatch(r"(?:(.{1,24}?)\s+)?(https://\S{10,500})", v)
+    if not m:
+        return False, "That does not look like a calendar address. It should be the private iCal link (it starts with https:// and usually ends with .ics). You can type a name first, like: work https://..."
+    u = m.group(2)
+    if ".ics" not in u and "ical" not in u.lower() and "calendar" not in u.lower():
+        return False, "That does not look like a calendar address (it should contain .ics or ical)."
+    name = (m.group(1) or f"calendar {len(_cals()) + 1}").strip()
+    cur = [(n, x) for n, x in _cals() if x != u]
+    cur.append((name, u))
+    _w600("calendar_urls", "\n".join(f"{n}\t{x}" for n, x in cur))
     _cache.update(t=0.0, text="")
-    return True, "Calendar address saved privately."
+    return True, f"Saved as '{name}'. You now have {len(cur)} calendar{'s' if len(cur) != 1 else ''}. Add more the same way."
+
+
+def calendar_names():
+    return [n for n, _ in _cals()]
 
 
 # ----------------------------------------------------------------------------- iCal
@@ -159,13 +185,24 @@ def events_between(text, lo, hi):
 
 
 def fetch():
-    url = _r("calendar_url")
-    if not url:
+    """All calendars as one iCal text (each event's title gets "[name]" when there are several). None if none connected. A calendar that fails is skipped, the others still answer."""
+    cals = _cals()
+    if not cals:
         return None
     if time.time() - _cache["t"] < 300 and _cache["text"]:
         return _cache["text"]
-    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "jarvis-local"}), timeout=12) as r:
-        _cache.update(t=time.time(), text=r.read(3_000_000).decode("utf-8", "ignore"))
+    parts = []
+    for name, url in cals:
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "jarvis-local"}), timeout=12) as r:
+                txt = r.read(3_000_000).decode("utf-8", "ignore")
+        except Exception as e:
+            print("[calendar] one calendar failed:", type(e).__name__, flush=True)
+            continue
+        if len(cals) > 1:
+            txt = re.sub(r"(?m)^SUMMARY:(.*)$", lambda m: f"SUMMARY:{m.group(1)} ({name})", txt)
+        parts.append(txt)
+    _cache.update(t=time.time(), text="\n".join(parts))
     return _cache["text"]
 
 
@@ -309,7 +346,8 @@ def setup_card(which):
     if which == "calendar":
         return {"type": "guide", "gid": "cal", "title": "Connect my calendar", "full": True, "paged": False, "secret": True, "status": "", "steps": [
             {"n": 1, "text": "Get your calendar's private iCal address.", "hint": "Google Calendar: Settings > click your calendar > Integrate calendar > \"Secret address in iCal format\". Anyone with that link can read your calendar, so do not share it."},
-            {"n": 2, "text": "Paste it here. It is stored privately and never shown again:", "input": {"placeholder": "https://calendar.google.com/calendar/ical/.../basic.ics", "label": "SAVE", "action": "cal_save"}}]}
+            {"n": 2, "text": "Paste it here, with a name if you like (for example: work https://...). It is stored privately and never shown again:", "input": {"placeholder": "work https://calendar.google.com/calendar/ical/.../basic.ics", "label": "SAVE", "action": "cal_save"},
+             "hint": "You can connect several: Google, iCloud (share a calendar as Public Calendar and copy the link), Outlook (Publish calendar, ICS link) and a work calendar. Run this again for each one."}]}
     return {"type": "guide", "gid": "mail", "title": "Connect my email (read-only)", "full": True, "paged": False, "secret": True, "status": "", "steps": [
         {"n": 1, "text": "I only READ sender and subject lines. I never send, delete, move or mark anything as read.", "hint": "Use an APP PASSWORD (Gmail: Google Account > Security > 2-Step Verification > App passwords; Outlook and iCloud have the same). Never your real password."},
         {"n": 2, "text": "Your email address:", "input": {"placeholder": "your email address", "label": "SAVE", "action": "mail_user"}},

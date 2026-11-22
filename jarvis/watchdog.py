@@ -88,6 +88,12 @@ class Watchdog:
         while self.restarts and now - self.restarts[0] > LIMIT_S:
             self.restarts.popleft()
         self.last_error = f"{what}: {why}"
+        try:                                                    # the page shows "restarted because: ..." once, in a small chip
+            os.makedirs(os.path.join(ROOT, "run"), exist_ok=True)
+            with open(os.path.join(ROOT, "run", "restart_reason.json"), "w") as f:
+                json.dump({"t": now, "what": str(what)[:30], "why": str(why)[:80]}, f)
+        except OSError:
+            pass
         log.info("restart %s (%s) [%d in the last %ds]", what, why, len(self.restarts), LIMIT_S)
         if len(self.restarts) > LIMIT_N:
             self.give_up()
@@ -167,6 +173,9 @@ class Watchdog:
                     self.restart_kiosk(f"page silent for {m.group(1)}s", kill=True)
             else:
                 self.miss["ui"] = 0
+        if not sh("pgrep -f '[.]venv/bin/python -m jarvis[.]hyprlog'") and time.time() >= self.grace.get("hyprlog", 0):      # the window event logger (glitch hunt)
+            self.grace["hyprlog"] = time.time() + 30
+            spawn([os.path.join(ROOT, ".venv", "bin", "python"), "-m", "jarvis.hyprlog"], "hyprlog")
         if not sh("pgrep -f '[.]venv/bin/python -m jarvis[.]orb'"):
             if time.time() >= self.grace.get("orb", 0):
                 self.miss["orb"] += 1

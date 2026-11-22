@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 from aiohttp import WSMsgType, web
 
-from . import audio, companion, desk, lookmem, dictate, maps, mac, opener, phone, phonecam, prefs, terminal, voiceapi, actions, config, settings, skills, tts
+from . import personas, audio, companion, desk, lookmem, dictate, maps, mac, opener, phone, phonecam, prefs, terminal, voiceapi, actions, config, settings, skills, tts
 from .core import Assistant
 
 PORT = int(os.environ.get("JARVIS_PORT", "8765"))
@@ -46,6 +46,7 @@ class Server:
         self.loop = None
         self.muted = False
         self.assistant = None
+        self._settings_problems = []
 
     # --- thread-safe push to every connected page -----------------------------
     def bcast(self, obj):
@@ -195,6 +196,34 @@ class Server:
             raise web.HTTPNotFound()
         return web.FileResponse(f, headers={"Cache-Control": "no-store"})
 
+    async def look_stream_api(self, request):
+        """The phone camera as ONE shared stream for the page (LOOK live view, Phone Camera preview): the server holds the only connection to the phone."""
+        from . import phonecam
+        if not self._origin_ok(request) or not phonecam.get_url():
+            raise web.HTTPForbidden()
+        resp = web.StreamResponse(headers={"Content-Type": "multipart/x-mixed-replace; boundary=jvframe", "Cache-Control": "no-store"})
+        await resp.prepare(request)
+        phonecam.RELAY.hold()
+        last = -1
+        try:
+            idle = 0
+            while True:
+                with phonecam.RELAY.lock:
+                    n, f = phonecam.RELAY.n, phonecam.RELAY.latest
+                if f and n != last:
+                    last, idle = n, 0
+                    await resp.write(b"--jvframe\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(f)).encode() + b"\r\n\r\n" + f + b"\r\n")
+                else:
+                    idle += 1
+                    if idle > 200 and phonecam.RELAY.err:               # about 8 s of nothing and an error: end the stream, the page says why
+                        break
+                await asyncio.sleep(0.07)                                # about 14 frames a second at most
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass
+        finally:
+            phonecam.RELAY.release()
+        return resp
+
     async def look_frame_api(self, request):
         """LIVE polling for a source without a stream address (USB webcam / screen): one fresh picture per request, only while the LOOK view is open."""
         if not self._origin_ok(request) or not self.assistant.look.get("open"):
@@ -215,6 +244,60 @@ class Server:
 
     async def popup_api(self, request):
         return web.json_response(opener.POPUP["cards"])
+
+    async def mkt_pulse_api(self, req):
+        from . import mktdesk
+        if not mktdesk.enabled():
+            return web.json_response({"error": "off"}, status=404)
+        return web.json_response(await asyncio.get_running_loop().run_in_executor(None, mktdesk.pulse))
+
+    async def mkt_chart_api(self, req):
+        """Chart data computed by code (levels, averages, the statistical band) for the desk card's own buttons; the voice path uses the same function."""
+        from . import markets, mktdesk
+        if not mktdesk.enabled():
+            return web.json_response({"error": "off"}, status=404)
+        q = req.query
+        sym = re.sub(r"[^A-Za-z0-9.^=-]", "", q.get("sym", ""))[:12]
+        rng = q.get("range", "3mo") if q.get("range") in markets.RANGES else "3mo"
+        ind = [x for x in q.get("ind", "").split(",") if re.fullmatch(r"ma\d{1,3}", x)][:4]
+        cmp_ = re.sub(r"[^A-Za-z0-9.^=-]", "", q.get("cmp", ""))[:12] or None
+        if not sym:
+            return web.json_response({"error": "no symbol"}, status=400)
+        p = await asyncio.get_running_loop().run_in_executor(None, lambda: markets.chart_payload(sym, rng, ind, q.get("levels") == "1", q.get("band") == "1", cmp_))
+        return web.json_response(p)
+
+    async def model_file(self, req):
+        """A cached real model (only a file this app downloaded and checked: the name must be exactly 16 hex characters and glb or stl)."""
+        from . import models3d
+        p = models3d.path_of(req.match_info["name"])
+        if not p:
+            raise web.HTTPNotFound()
+        return web.FileResponse(p, headers={"Cache-Control": "private, max-age=3600", "Content-Type": "model/gltf-binary" if p.suffix == ".glb" else "model/stl"})
+
+    async def holo_export_api(self, req):
+        """A picture or a few seconds of video of the open 3D model, from the card's PNG / VIDEO buttons -> ~/jarvis/exports (small files only, fixed names)."""
+        kind = req.query.get("kind", "")
+        if kind not in ("png", "webm") or (req.content_length or 0) > 8_000_000:
+            return web.json_response({"ok": False, "error": "not allowed"}, status=400)
+        data = await req.read()
+        if len(data) > 8_000_000 or not data:
+            return web.json_response({"ok": False, "error": "too big"}, status=413)
+        magic_ok = data[:8] == b"\x89PNG\r\n\x1a\n" if kind == "png" else data[:4] == b"\x1aE\xdf\xa3"
+        if not magic_ok:
+            return web.json_response({"ok": False, "error": "not a " + kind}, status=415)
+        import re as _re
+        slug = _re.sub(r"[^a-z0-9]+", "-", req.query.get("title", "model").lower()).strip("-")[:30] or "model"
+        d = config.ROOT / "exports"
+        d.mkdir(exist_ok=True)
+        name = f"{slug}-{int(time.time())}.{kind}"
+        (d / name).write_bytes(data)
+        for f in sorted(d.glob("*"))[:-30]:                           # keep the newest 30
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        self.assistant.last_export = str(d / name)
+        return web.json_response({"ok": True, "name": name})
 
     async def idle_api(self, req):
         """What the idle screen shows besides the clock: the weather for the home area and the next reminder. The weather is cached for 10 minutes."""
@@ -243,12 +326,56 @@ class Server:
         return web.FileResponse(WEB / "map.html", headers={"Cache-Control": "no-store"})
 
     def _spec(self, req):
+        if req.match_info["id"] == "me" and self._origin_ok(req):
+            return maps.me_spec()
         if not self._origin_ok(req) or req.match_info["id"] not in maps.SPECS:
             raise web.HTTPNotFound()
         return maps.SPECS[req.match_info["id"]]
 
     async def map_api(self, req):
+        if req.match_info["id"] == "me":                                      # no spec: just show where I am (the MAP button)
+            return web.json_response(maps.me_spec())
         return web.json_response(self._spec(req))
+
+    async def hook_api(self, req):
+        """Claude Code / Codex status from bin/jarvis-hook (localhost only, per-install token)."""
+        from . import claudestat, notifier
+        if not claudestat.check(req.match_info["token"]) or req.remote not in ("127.0.0.1", "::1"):
+            raise web.HTTPNotFound()
+        try:
+            body = await req.json()
+        except Exception:
+            raise web.HTTPBadRequest()
+        st = claudestat.update(body)
+        if not st:
+            raise web.HTTPBadRequest()
+        self.bcast({"t": "claudestat", **st})
+        if st["state"] == "done":
+            threading.Thread(target=notifier.send, args=("claude", "Claude is done", "Claude Code finished on the Go."), daemon=True).start()
+        return web.json_response({"ok": True})
+
+    async def map_style(self, req):
+        if not self._origin_ok(req):
+            raise web.HTTPForbidden()
+        from . import tilecache
+        origin = "%s://%s" % (req.scheme, req.host)
+        try:
+            st = await asyncio.get_running_loop().run_in_executor(None, tilecache.style, origin)
+        except Exception:
+            raise web.HTTPServiceUnavailable(text="map style unavailable")
+        return web.json_response(st, headers={"Cache-Control": "max-age=300"})
+
+    async def tile_proxy(self, req):
+        if not self._origin_ok(req):
+            raise web.HTTPForbidden()
+        from . import tilecache
+        try:
+            data, ctype, how = await asyncio.get_running_loop().run_in_executor(None, tilecache.get, req.match_info["src"], req.match_info["path"])
+        except LookupError:
+            raise web.HTTPNotFound()
+        except OSError:
+            raise web.HTTPNotFound(text="no tile")
+        return web.Response(body=data, content_type=ctype, headers={"Cache-Control": "max-age=86400", "X-Tile": how})
 
     async def map_mode(self, req):
         s = self._spec(req)
@@ -330,12 +457,25 @@ class Server:
         await ws.prepare(req)
         self.clients.add(ws)
         a = self.assistant
+        try:                                                          # "restarted because: ..." for a minute after the supervisor restarted something
+            rr = json.loads((config.ROOT / "run" / "restart_reason.json").read_text())
+            if time.time() - rr["t"] < 90:
+                await ws.send_str(json.dumps({"t": "restarted", "what": rr["what"], "why": rr["why"]}))
+        except (OSError, ValueError, KeyError):
+            pass
+        for pr in (self._settings_problems or [])[:1]:
+            await ws.send_str(json.dumps({"t": "restarted", "what": "settings", "why": "a saved value is invalid: " + pr}))
         await ws.send_str(json.dumps({"t": "hello", "state": UI_STATE.get(a.state, a.state), "history": self.history,
-                                      "muted": self.muted, "source": a.source, "persona": a.persona, "handsfree": bool(a.hf), "muted": a.muted, "followup": a.followup, "prefs": prefs.public(a.persona)}))
+                                      "muted": self.muted, "source": a.source, "persona": a.persona, "personas": personas.public(), "handsfree": bool(a.hf), "muted": a.muted, "followup": a.followup, "prefs": prefs.public(a.persona)}))
         try:
             async for m in ws:
                 if m.type == WSMsgType.TEXT:
-                    msg = json.loads(m.data)
+                    try:
+                        msg = json.loads(m.data)
+                    except ValueError:
+                        continue                                        # a malformed message is ignored; it must not drop the page's connection
+                    if not isinstance(msg, dict):
+                        continue
                     if msg.get("t") == "scratch_get":
                         await ws.send_str(json.dumps({"t": "scratch", "text": desk.scratch_get()}))
                         continue
@@ -345,10 +485,19 @@ class Server:
                     if msg.get("t") == "voice_copy":                         # the full address (it contains the secret) goes to the page that asked, to put on the clipboard, and nowhere else
                         await ws.send_str(json.dumps({"t": "clip", "text": voiceapi.url()}))
                         continue
+                    if msg.get("t") == "voice_copy_look":                    # same secret, the photo route
+                        await ws.send_str(json.dumps({"t": "clip", "text": voiceapi.url().replace("/voice", "/look")}))
+                        continue
+                    if msg.get("t") == "voice_copy_location":                # same secret, the location route
+                        await ws.send_str(json.dumps({"t": "clip", "text": voiceapi.url().replace("/voice", "/location")}))
+                        continue
                     if msg.get("t") == "term_open":                      # the token goes to the page that asked, over this socket, and nowhere else
                         await ws.send_str(json.dumps({"t": "termtoken", "token": terminal.TOKEN, "claude_dir": settings.get("claude_dir") or ""}))
                         continue
-                    self._client_msg(msg)
+                    try:
+                        self._client_msg(msg)
+                    except Exception as e:                              # one bad message (wrong type, missing field) never kills the connection
+                        print("[ws] bad message ignored:", type(e).__name__, flush=True)
         finally:
             self.clients.discard(ws)
             if a.state == "recording" and not self.clients:   # page vanished while the key was "held"
@@ -360,7 +509,7 @@ class Server:
         if t == "talk" and m.get("cancel"):
             a.cancel_press()
         elif t == "talk":
-            a.press(look=bool(m.get("look"))) if m.get("down") else a.release()
+            (threading.Thread(target=a.press, kwargs={"look": True}, daemon=True).start() if m.get("look") else a.press()) if m.get("down") else a.release()
         elif t == "reset":
             a.reset()
         elif t == "silent":                                    # speech output off (not the same as MUTE = deaf mode)
@@ -384,6 +533,24 @@ class Server:
             threading.Thread(target=go, daemon=True).start()
         elif t == "ask" and m.get("text") in ("pair my Mac", "set up Spotify", "show the clock now", "set up the iphone voice", "what happened", "take the tour"):      # fixed requests from the settings buttons
             a.ask_text(m["text"])
+        elif t == "sfx" and m.get("ev") in ("open", "close", "menu"):
+            from . import sounds
+            if time.time() - getattr(self, "_sfx_t", 0) > 0.12:
+                self._sfx_t = time.time()
+                sounds.play(m["ev"])
+        elif t == "presence" and m.get("op") in ("pause", "resume", "off", "on"):
+            from . import presence
+            threading.Thread(target=a.run_presence, args=({"kind": m["op"]},), daemon=True).start()
+        elif t == "typed" and isinstance(m.get("text"), str) and m["text"].strip():           # the chat widget / type line: the same router as voice
+            img = None
+            mm = re.fullmatch(r"data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)", m.get("image") or "") if isinstance(m.get("image"), str) and len(m.get("image") or "") < 8_500_000 else None
+            if mm:
+                import base64
+                config.SHOTS_DIR.mkdir(exist_ok=True)
+                img = str(config.SHOTS_DIR / f"shot-{int(time.time() * 1000)}.{'jpg' if mm.group(1) == 'jpeg' else mm.group(1)}")
+                with open(img, "wb") as f:
+                    f.write(base64.b64decode(mm.group(2)))
+            threading.Thread(target=a.ask_text, args=(m["text"].strip()[:600],), kwargs={"image": img} if img else {}, daemon=True).start()
         elif t == "scratch_save":
             desk.scratch_put(str(m.get("text", "")))
         elif t == "layout_save":
@@ -400,13 +567,17 @@ class Server:
                 a.look_select(int(m.get("i")))
             except (TypeError, ValueError):
                 pass
-        elif t == "look_op" and m.get("op") in ("live", "freeze", "close", "clear"):
-            if m["op"] == "close":
+        elif t == "look_op" and m.get("op") in ("live", "freeze", "close", "clear", "phone", "highlight", "scan"):
+            if m["op"] == "phone":
+                threading.Thread(target=lambda: a.run_send("phone", "look"), daemon=True).start()
+            elif m["op"] in ("highlight", "scan"):
+                threading.Thread(target=a.ask_text, args=("highlight everything" if m["op"] == "highlight" else "scan everything on my desk",), daemon=True).start()
+            elif m["op"] == "close":
                 a.look_close()
             elif m["op"] == "freeze":
                 a.look["live"] = False; opener.NOTIFY({"t": "look", "op": "freeze"})
             elif m["op"] == "live":
-                a.look.update(live=True, boxes=[], sel=None); opener.NOTIFY({"t": "look", "op": "live", "stream": phonecam.get_url() if a.look["source"] == "phone camera" else None})
+                a.look.update(live=True, boxes=[], sel=None); opener.NOTIFY({"t": "look", "op": "live", "stream": "/api/look/stream" if a.look["source"] == "phone camera" else None})
             else:
                 a.look["boxes"], a.look["sel"] = [], None; opener.NOTIFY({"t": "look", "op": "boxes", "boxes": []})
         elif t == "look_mac":
@@ -423,14 +594,17 @@ class Server:
             self.ui_beat = time.time()
         elif t == "dictate":                                   # hold the on-screen mic button / the key: words are typed into the focused window
             threading.Thread(target=self.dictation.start if m.get("down") else self.dictation.stop, daemon=True).start()
+        elif t == "mkt_closed":
+            from . import mktdesk
+            mktdesk.STATE["open"] = False
+        elif t in ("holo_open", "holo_closed", "holo_sel", "holo_notes", "holo_tour", "holo_save_ask"):
+            a.holo_event(m)
         elif t == "persona":
             threading.Thread(target=a.set_persona, args=(m.get("v"), bool(m.get("announce", True))), daemon=True).start()
         elif t == "source" and m.get("v") in ("auto", "screen", "window", "camera", "phone"):
-            a.source = m["v"]
-            if m["v"] == "camera":
-                threading.Thread(target=a.camera_preview, daemon=True).start()
-        elif t == "camera":
-            threading.Thread(target=a.camera_preview, daemon=True).start()
+            a.source = m["v"]                                         # choosing a source never starts a camera or raises a popup
+        elif t == "camera" or t == "look_button":
+            threading.Thread(target=a.look_button, daemon=True).start()
 
     # --- background tasks -------------------------------------------------------
     async def quiet_loop(self):
@@ -444,6 +618,36 @@ class Server:
                     await asyncio.get_running_loop().run_in_executor(None, self.assistant.quiet_apply, on)
             except Exception as e:
                 print("[quiet] failed:", type(e).__name__, flush=True)
+
+    def open_typebox(self):
+        """Open (or close, if open) the small type box next to the pointer. Needs no browser: it is a tiny native overlay."""
+        a = self.assistant
+        subprocess.Popen([str(config.ROOT / "bin" / "jarvis-typebox"), a.persona, personas.PERSONAS[a.persona]["name"]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+
+    async def market_alert_loop(self):
+        """Alerts for stocks you asked about: one check a minute, only if you have any. They only notify (a chip, a spoken line, your phone); they never act."""
+        from . import markets, mktdesk
+        while True:
+            await asyncio.sleep(60)
+            try:
+                if mktdesk.enabled() and markets.alerts():
+                    for line in await asyncio.get_running_loop().run_in_executor(None, markets.check_alerts):
+                        self.bcast({"t": "health", "msg": line})
+                        self.assistant.say(line + " " + "This is only an alert, not advice.") if not self.assistant.muted else None
+                        if prefs.get("notify_phone_reminders"):
+                            threading.Thread(target=self.assistant.run_phone, args=({"title": "Market alert", "message": line},), daemon=True).start()
+            except Exception as e:
+                print("[markets] alert check failed:", type(e).__name__, flush=True)
+
+    async def buddy_loop(self):
+        """Recurring reminders and promise nudges: checked every 10 s."""
+        while True:
+            await asyncio.sleep(10)
+            try:
+                await asyncio.get_running_loop().run_in_executor(None, self.assistant.buddy_tick)
+            except Exception as e:
+                print("[buddy] failed:", type(e).__name__, flush=True)
 
     async def briefing_loop(self):
         """'Brief me every morning at 8': at that minute, once a day, only if the screen is on and he is not muted."""
@@ -498,10 +702,11 @@ class Server:
                 off = not await asyncio.get_running_loop().run_in_executor(None, net.online)
                 if off != was_off:
                     was_off = off
-                    self.bcast({"t": "offline", "msg": "OFFLINE: timers, notes, lists, the clock and volume still work" if off else ""})
+                    self.assistant.offline_changed(off, "net", speak=True)           # chip + said once; back online clears it by itself
                 if int(time.time()) % 600 < 20:
                     self.assistant.mic_watch()
                     audio.cleanup_stale()
+                    tts.prune_cache()
                 if time.time() - last_update > 86400 and updater.source()[0] and prefs.get("update_check"):
                     last_update = time.time()
                     c = await asyncio.get_running_loop().run_in_executor(None, updater.check)
@@ -582,12 +787,21 @@ class Server:
             elif cmd in ("micbtn show", "micbtn hide"):
                 dictate.set_micbtn(cmd.endswith("show"))
             elif cmd == "camera":
-                ok = await asyncio.get_running_loop().run_in_executor(None, a.camera_preview)
-                extra = "camera frame shown" if ok else "no USB webcam"
+                ok = await asyncio.get_running_loop().run_in_executor(None, a.look_button)
+                extra = "look view opened" if ok else "no camera frame"
             elif cmd.startswith("help "):                            # from the watchdog: a plain card instead of a restart loop
                 self.on_card({"type": "text", "title": "Jarvis needs help", "text": cmd[5:][:300]})
             elif cmd == "listen restart":
                 threading.Thread(target=lambda: (a.set_handsfree(False), time.sleep(1.0), a.set_handsfree(True)), daemon=True).start()
+            elif cmd.split()[0] == "typebox":                     # the Hyprland binds: `jarvisctl typebox alt` / `typebox ctrl` / `typebox` (the menu button)
+                key = (cmd.split() + ["any"])[1]
+                want = settings.get("typebox_key") or "alt"
+                if key == "any" or want == "both" or want == key:
+                    threading.Thread(target=self.open_typebox, daemon=True).start()
+            elif cmd == "circle":                                 # SUPER+SHIFT+C: circle to ask
+                threading.Thread(target=a.circle_start, daemon=True).start()
+            elif cmd == "buddytick":                              # test hook: run the reminder/promise check now
+                threading.Thread(target=a.buddy_tick, daemon=True).start()
             elif cmd == "brainwarm":
                 threading.Thread(target=a.brain.warm, daemon=True).start()
             elif cmd == "toggle":                                 # SUPER+SHIFT+J: corner orb <-> full screen
@@ -633,10 +847,15 @@ class Server:
         app = web.Application(middlewares=[nocache])
         app.router.add_get("/", self.index)
         app.router.add_get("/api/idle", self.idle_api)
+        app.router.add_post("/api/holo/export", self.holo_export_api)
+        app.router.add_get("/api/markets/pulse", self.mkt_pulse_api)
+        app.router.add_get("/api/markets/chart", self.mkt_chart_api)
+        app.router.add_get("/api/model/{name}", self.model_file)
         app.router.add_get("/api/popup", self.popup_api)
         app.router.add_get("/api/windows", self.windows_api)
         app.router.add_get("/api/geosuggest", self.geosuggest_api)
         app.router.add_get("/api/look/frame", self.look_frame_api)
+        app.router.add_get("/api/look/stream", self.look_stream_api)
         app.router.add_get("/lookmem/{name}", self.lookmem_file)
         app.router.add_get("/term/ws", self.term_ws)
         app.router.add_get("/api/files", self.files_api)
@@ -644,6 +863,9 @@ class Server:
         app.router.add_get("/api/files/thumb", self.files_thumb)
         app.router.add_get("/map", self.map_page)
         app.router.add_get("/api/map/{id}", self.map_api)
+        app.router.add_post("/hook/{token}", self.hook_api)
+        app.router.add_get("/api/mapstyle", self.map_style)
+        app.router.add_get("/api/tc/{src}/{path:.*}", self.tile_proxy)
         app.router.add_post("/api/map/{id}/mode", self.map_mode)
         app.router.add_post("/api/map/{id}/goto", self.map_goto)
         app.router.add_post("/api/map/{id}/send", self.map_send)
@@ -666,8 +888,21 @@ class Server:
         asyncio.ensure_future(self.watch_loop())
         asyncio.ensure_future(self.briefing_loop())
         asyncio.ensure_future(self.quiet_loop())
+        asyncio.ensure_future(self.buddy_loop())
+        asyncio.ensure_future(self.market_alert_loop())
+        from . import news, weather
+        if settings.get("desk_presence"):
+            from . import presence
+            threading.Timer(20, lambda: presence.start(self.assistant.presence_on_change, lambda: bool(self.assistant.look.get("open")))).start()
+        from . import settingsio
+        note = settingsio.ensure_schema()
+        self._settings_problems = settingsio.problems()
+        if note:
+            print("[settings]", note, flush=True)
+        news.start()                                                          # headlines refresh in the background every 12 minutes: "show the news" opens from memory
+        threading.Thread(target=lambda: (time.sleep(25), weather.prefetch()), daemon=True).start()
+        opener.set_notifier(lambda msg: self.loop.call_soon_threadsafe(self.bcast, msg))      # page messages (moods, embeds, prefs...) also reach a test server's page
         if os.environ.get("JARVIS_NO_DESKTOP") != "1":       # desktop side effects: the dock orb and a parked warm browser (tests set JARVIS_NO_DESKTOP=1)
-            opener.set_notifier(lambda msg: self.loop.call_soon_threadsafe(self.bcast, msg))
             opener.watch_closed()
             if settings.get("micbtn"):
                 dictate.set_micbtn(True)

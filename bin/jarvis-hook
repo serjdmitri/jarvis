@@ -1,0 +1,9 @@
+#!/bin/sh
+# Called by Claude Code / Codex hooks: jarvis-hook <working|needs|done|fail> [message]. Reads the token and port privately, posts to 127.0.0.1 only, always exits 0 (a hook must never break the tool).
+D="$(dirname "$(readlink -f "$0")")/.."
+TOK=$(cat "$D/data/hook_token" 2>/dev/null) || exit 0
+EVT="${1:-working}"; MSG="${2:-}"
+[ -n "$JARVIS_HOOK_WHO" ] || JARVIS_HOOK_WHO=claude
+curl -s -m 2 -o /dev/null -X POST "http://127.0.0.1:${JARVIS_PORT:-8765}/hook/$TOK" -H 'Content-Type: application/json' \
+  -d "{\"event\":\"$EVT\",\"who\":\"$JARVIS_HOOK_WHO\",\"message\":\"$(printf '%s' "$MSG" | tr -d '"\\' | cut -c1-100)\"}" 2>/dev/null
+exit 0

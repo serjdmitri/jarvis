@@ -1,99 +1,159 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Jarvis map</title>
-<link rel="stylesheet" href="/static/vendor/leaflet.css">
+<link rel="stylesheet" href="/static/vendor/maplibre/maplibre-gl.css">
 <style>
- :root{--acc:#3d8bff;--fg:#e8f0ff;--dim:#8aa0cf;--line:rgba(130,170,255,.4);--bg:#070a1c;--hot:#ff4d6d}
- [data-theme=rose]{--acc:#ff2d55;--bg:#06050d;--line:rgba(235,240,255,.4);--dim:#a79fbe}
+ :root{--acc:#3d8bff;--fg:#e8f0ff;--dim:#8aa0cf;--line:rgba(130,170,255,.4);--bg:#070a1c;--hot:#ff4d6d;--glass:rgba(5,10,28,.72)}
+ [data-theme=rose]{--acc:#ff2d55;--bg:#06050d;--line:rgba(235,240,255,.4);--dim:#a79fbe;--glass:rgba(10,6,16,.72)}
  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:"Noto Sans Mono",monospace;overflow:hidden}
  #map{position:absolute;inset:0;background:var(--bg)}
- .leaflet-container{background:var(--bg)}
- .panel{position:absolute;z-index:1000;background:rgba(4,8,22,.86);border:1px solid var(--line);padding:8px 10px;font-size:11px}
- #info{left:10px;top:10px;max-width:56%} #info b{font-size:12px;letter-spacing:.08em} #info .sub{color:var(--dim);margin-top:3px}
- #modes{display:flex;gap:6px;margin-top:7px}
- button{font:inherit;font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--fg);background:rgba(0,0,0,.5);border:1px solid var(--line);padding:6px 9px;cursor:pointer}
+ #vig{position:absolute;inset:0;z-index:5;pointer-events:none;background:radial-gradient(ellipse at 50% 50%,transparent 52%,var(--bg) 100%)}
+ .tab{position:absolute;z-index:10;background:var(--glass);border:1px solid var(--line);font-size:11px}
+ #info{left:0;top:10px;max-width:60%;padding:6px 14px 8px 12px;clip-path:polygon(0 0,calc(100% - 14px) 0,100% 100%,0 100%);border-left:0}
+ #info b{font-size:11px;letter-spacing:.14em;color:var(--acc)} #info .sub{color:var(--dim);margin-top:3px;font-size:10px}
+ #modes{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+ button{font:inherit;font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--fg);background:var(--glass);border:1px solid var(--line);padding:7px 10px;cursor:pointer;min-height:34px}
  button.on{border-color:var(--acc);color:#fff;box-shadow:0 0 8px var(--acc)}
  button:disabled{opacity:.35}
- #send{right:10px;bottom:76px;display:flex;flex-direction:column;gap:6px} #status{right:10px;top:10px;color:var(--dim);display:none}
- #tiles{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:1001;display:none;text-align:center}
+ #ctl{right:10px;top:52px;display:flex;flex-direction:column;gap:6px;border:0;background:none}
+ #ctl button{width:44px;height:44px;padding:0;font-size:18px;font-weight:400}
+ #ctl .w{font-size:10px}
+ #send{left:10px;bottom:34px;display:flex;gap:6px;border:0;background:none}
+ #status{left:50%;transform:translateX(-50%);bottom:14px;padding:6px 10px;display:none;color:var(--dim)}
+ #tiles{left:50%;top:50%;transform:translate(-50%,-50%);display:none;text-align:center;padding:12px 16px}
  .pin{width:14px;height:14px;border-radius:50%;background:var(--hot);border:2px solid #fff;box-shadow:0 0 8px var(--hot)}
- .me{width:16px;height:16px;border-radius:50%;background:var(--acc);border:3px solid #fff;box-shadow:0 0 0 6px rgba(61,139,255,.25),0 0 10px var(--acc)}
- .pl{width:12px;height:12px;border-radius:50%;background:var(--acc);border:2px solid #fff}
- .dark-osm{filter:invert(1) hue-rotate(188deg) saturate(.5) brightness(1.05) contrast(.95)}
- [data-theme=rose] .dark-osm{filter:invert(1) hue-rotate(168deg) saturate(.25) brightness(.8) contrast(.95)}
- .leaflet-popup-content-wrapper,.leaflet-popup-tip{background:#050a1c;color:var(--fg);border:1px solid var(--line);border-radius:0}
- .leaflet-popup-content{font-size:11px;margin:8px 10px} .leaflet-popup-content button{margin-top:6px}
+ .pl{width:12px;height:12px;border-radius:50%;background:var(--acc);border:2px solid #fff;box-shadow:0 0 8px var(--acc)}
+ .me{position:relative;width:16px;height:16px;border-radius:50%;background:var(--acc);border:3px solid #fff;box-shadow:0 0 10px var(--acc)}
+ .me::after{content:"";position:absolute;inset:-12px;border-radius:50%;border:2px solid var(--acc);opacity:0;animation:pulse 2.4s ease-out infinite}
+ @keyframes pulse{0%{transform:scale(.5);opacity:.8}100%{transform:scale(1.6);opacity:0}}
+ .lab{font-size:10px;letter-spacing:.06em;color:var(--fg);background:var(--glass);border:1px solid var(--line);padding:2px 6px;white-space:nowrap;margin-top:6px}
+ .maplibregl-popup-content{background:#050a1c;color:var(--fg);border:1px solid var(--line);border-radius:0;font-size:11px;padding:8px 10px}
+ .maplibregl-popup-tip{display:none} .maplibregl-popup-close-button{color:var(--fg)}
+ .maplibregl-ctrl-attrib{background:var(--glass)!important;color:var(--dim)!important;font-size:9px} .maplibregl-ctrl-attrib a{color:var(--dim)!important}
+ .rm #vig{display:none}
 </style></head><body>
-<div id="map"></div>
-<div id="info" class="panel"><b id="title">MAP</b><div class="sub" id="sub"></div><div class="sub" id="loc"></div><div id="modes"></div><div id="confirm" style="display:none"><button id="byes">YES, THIS IS WHERE I LIVE</button></div></div>
-<div id="send" class="panel"><button id="bmac">SEND TO MAC</button><button id="bphone">SEND TO PHONE</button></div>
-<div id="status" class="panel"></div>
-<div id="tiles" class="panel">MAP TILES ARE NOT LOADING<br><span style="color:var(--dim)">the place, route and distance are still shown</span></div>
-<script src="/static/vendor/leaflet.js"></script>
+<div id="map"></div><div id="vig"></div>
+<div id="info" class="tab"><b id="title">MAP</b><div class="sub" id="sub"></div><div class="sub" id="loc"></div><div id="modes"></div><div id="confirm" style="display:none"><button id="byes">YES, THIS IS WHERE I LIVE</button></div></div>
+<div id="ctl" class="tab"><button id="zin" aria-label="zoom in">+</button><button id="zout" aria-label="zoom out">&minus;</button><button id="me" class="w" aria-label="centre on me">ME</button><button id="d3" class="w" aria-label="2D or 3D">3D</button></div>
+<div id="send" class="tab"><button id="bmac">SEND TO MAC</button><button id="bphone">SEND TO PHONE</button></div>
+<div id="status" class="tab"></div>
+<div id="tiles" class="tab">MAP TILES ARE NOT LOADING<br><span style="color:var(--dim)">the place, route and distance are still shown</span></div>
+<script src="/static/vendor/maplibre/maplibre-gl.js"></script>
 <script>
 try { const t = parent.document.documentElement.dataset.theme; if (t) document.documentElement.dataset.theme = t; } catch (e) {}
-const id = new URLSearchParams(location.search).get('id'); let spec = null, map, layers = [], tileOK = 0, tileBad = 0;
+const Q = new URLSearchParams(location.search), id = Q.get('id') || 'me';
+const rose = () => document.documentElement.dataset.theme === 'rose';
 const $ = s => document.querySelector(s);
-const fmtD = (m) => spec.imperial ? (m / 1609.344 >= .2 ? (m / 1609.344).toFixed(1) + ' mi' : Math.round(m * 3.281 / 10) * 10 + ' ft') : (m >= 1000 ? (m / 1000).toFixed(1) + ' km' : Math.round(m / 10) * 10 + ' m');
-const fmtT = (s) => { const m = Math.max(1, Math.round(s / 60)); return m >= 60 ? Math.floor(m / 60) + ' h ' + (m % 60) + ' min' : m + ' min'; };
-function say(t) { const s = $('#status'); s.textContent = t; s.style.display = 'block'; clearTimeout(say.t); say.t = setTimeout(() => s.style.display = 'none', 3500); }
-async function load() {
-  try { const r = await fetch('/api/map/' + id); if (!r.ok) throw new Error('gone'); spec = await r.json(); draw(true); }
-  catch (e) { $('#title').textContent = 'MAP UNAVAILABLE'; $('#sub').textContent = 'this map has expired: ask for it again'; $('#send').style.display = 'none'; }
+const fmtD = m => spec.imperial ? (m / 1609.344 >= .2 ? (m / 1609.344).toFixed(1) + ' mi' : Math.round(m * 3.281 / 10) * 10 + ' ft') : (m >= 1000 ? (m / 1000).toFixed(1) + ' km' : Math.round(m / 10) * 10 + ' m');
+const fmtT = s => { const m = Math.max(1, Math.round(s / 60)); return m >= 60 ? Math.floor(m / 60) + ' h ' + (m % 60) + ' min' : m + ' min'; };
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function say(t) { const s = $('#status'); s.textContent = t; s.style.display = 'block'; clearTimeout(say.t); say.t = setTimeout(() => s.style.display = 'none', 4500); }
+let spec = null, map = null, marks = [], tileOK = 0, tileBad = 0, is3d = false, ready = false;
+function toRaster(why) { try { sessionStorage.setItem('mapwhy', String(why)); } catch (e) {} try { parent.postMessage({ t: 'map_fallback', why }, '*'); } catch (e) {} location.replace('/static/map-raster.html' + location.search); }
+// ---- Jarvis navy: the OpenFreeMap dark style, recoloured by layer name (water, land, roads, labels)
+function recolor(st) {
+  const P = rose() ? { bg: '#06050d', water: '#0e0b1c', land: '#0b0914', park: '#0d0d16', road: '#2a2040', major: '#3b2c55', bld: '#141022', lab: '#b9aed6', halo: '#06050d', bnd: '#3a2d52' }
+                   : { bg: '#070a1c', water: '#0b1536', land: '#0a1026', park: '#0b142c', road: '#1d2b57', major: '#2c4285', bld: '#101a3d', lab: '#9fb4e6', halo: '#070a1c', bnd: '#27386e' };
+  for (const l of st.layers) {
+    const p = l.paint || (l.paint = {}), n = l.id;
+    if (l.type === 'background') p['background-color'] = P.bg;
+    else if (l.type === 'fill') p['fill-color'] = n === 'water' ? P.water : n === 'building' ? P.bld : /park|wood/.test(n) ? P.park : /aeroway/.test(n) ? P.road : P.land;
+    else if (l.type === 'line') { if (/boundary/.test(n)) p['line-color'] = P.bnd; else if (n === 'waterway') p['line-color'] = P.water; else if (/major|motorway/.test(n) && !/casing/.test(n)) p['line-color'] = P.major; else if (/casing/.test(n)) p['line-color'] = P.bg; else p['line-color'] = P.road; }
+    else if (l.type === 'symbol') { p['text-color'] = P.lab; p['text-halo-color'] = P.halo; p['text-halo-width'] = 1.4; }
+    if (n === 'building') { l.paint['fill-outline-color'] = P.road; }
+  }
+  const b = st.layers.find(l => l.id === 'building');                       // 3D buildings: a second layer on the same data, shown only when tilted
+  if (b) st.layers.splice(st.layers.indexOf(b) + 1, 0, { id: 'building3d', type: 'fill-extrusion', source: b.source, 'source-layer': 'building', minzoom: 14,
+    paint: { 'fill-extrusion-color': P.bld, 'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 8], 'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0], 'fill-extrusion-opacity': .85 },
+    layout: { visibility: 'none' } });
+  return st;
 }
-function icon(cls) { return L.divIcon({ className: '', html: `<div class="${cls}"></div>`, iconSize: [16, 16], iconAnchor: [8, 8] }); }
+function circle(lat, lon, r) {                                               // accuracy ring as a polygon (metres to degrees)
+  const pts = [], dLat = r / 111320, dLon = r / (111320 * Math.max(.01, Math.cos(lat * Math.PI / 180)));
+  for (let i = 0; i <= 64; i++) { const a = i / 64 * 2 * Math.PI; pts.push([lon + dLon * Math.cos(a), lat + dLat * Math.sin(a)]); }
+  return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [pts] } };
+}
+function el(cls, label) { const d = document.createElement('div'); d.innerHTML = `<div class="${cls}"></div>` + (label ? `<div class="lab">${esc(label)}</div>` : ''); d.style.display = 'flex'; d.style.flexDirection = 'column'; d.style.alignItems = 'center'; return d; }
+function mk(lat, lon, cls, label, popup) {
+  const m = new maplibregl.Marker({ element: el(cls, label), anchor: label ? 'top' : 'center' }).setLngLat([lon, lat]);
+  if (popup) m.setPopup(new maplibregl.Popup({ offset: 12, closeButton: false, maxWidth: '220px' }).setHTML(popup));
+  m.addTo(map); marks.push(m); return m;
+}
+function setSource(name, data) {
+  const s = map.getSource(name); if (s) s.setData(data); else map.addSource(name, { type: 'geojson', data });
+}
+function ensureLayers() {
+  if (!map.getLayer('acc-fill')) {
+    const c = getComputedStyle(document.documentElement).getPropertyValue('--acc').trim() || '#3d8bff';
+    map.addLayer({ id: 'acc-fill', type: 'fill', source: 'acc', paint: { 'fill-color': c, 'fill-opacity': .14 } });
+    map.addLayer({ id: 'acc-line', type: 'line', source: 'acc', paint: { 'line-color': c, 'line-width': 1.2, 'line-opacity': .7, 'line-dasharray': [2, 2] } });
+    map.addLayer({ id: 'route-under', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#f2f7ff', 'line-width': 9, 'line-opacity': .9 } });
+    map.addLayer({ id: 'route', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': c, 'line-width': 5 } });   // pixel widths: visible at every zoom
+  }
+}
 function draw(fit) {
-  layers.forEach(l => map.removeLayer(l)); layers = []; const pts = [];
+  marks.forEach(m => m.remove()); marks = [];
   $('#title').textContent = (spec.title || 'MAP').toUpperCase();
-  const route = spec.routes && spec.routes[spec.mode];
-  if (route) {                                   // the route: constant PIXEL width at every zoom (Leaflet weights are pixels), a light outline under it for contrast on the dark tiles,
-    const common = { smoothFactor: 0, noClip: true, lineCap: 'round', lineJoin: 'round', interactive: false };     // no simplification (it collapsed the line to a dot when zoomed out) and no clipping
-    const under = L.polyline(route.geometry, { ...common, color: '#f2f7ff', weight: 9, opacity: .9 }).addTo(map);
-    const pl = L.polyline(route.geometry, { ...common, color: getComputedStyle(document.documentElement).getPropertyValue('--acc').trim() || '#3d8bff', weight: 5, opacity: 1 }).addTo(map);
-    layers.push(under, pl); route.geometry.forEach(p => pts.push(p));
-    $('#sub').textContent = fmtT(route.dur_s) + ' · ' + fmtD(route.dist_m); } else $('#sub').textContent = spec.origin ? 'from ' + spec.origin.label + (spec.origin.source === 'ip' ? ' (guessed from your internet address)' : '') : '';
-  const SRC = { home: 'home', today: 'set today', wifi: 'Wi-Fi', ip: 'IP guess, rough', 'ip (confirmed)': 'IP, confirmed' };
-  $('#loc').textContent = spec.origin ? 'Location: ' + spec.origin.label + ' (source: ' + (SRC[spec.origin.source] || spec.origin.source || '?') + ')  ' : '';
-  if (spec.origin) { const ch = document.createElement('button'); ch.textContent = 'CHANGE'; ch.onclick = async () => { const r = await fetch(`/api/map/${id}/change`, { method: 'POST' }).then(x => x.json()).catch(() => ({})); say(r.message || ''); }; $('#loc').appendChild(ch); }
+  const route = spec.routes && spec.routes[spec.mode], pts = [], o = spec.origin;
+  setSource('route', route ? { type: 'Feature', geometry: { type: 'LineString', coordinates: route.geometry.map(p => [p[1], p[0]]) } } : { type: 'FeatureCollection', features: [] });
+  setSource('acc', o && o.acc ? { type: 'FeatureCollection', features: [circle(o.lat, o.lon, o.acc)] } : { type: 'FeatureCollection', features: [] });
+  ensureLayers();
+  if (route) { route.geometry.forEach(p => pts.push([p[1], p[0]])); $('#sub').textContent = fmtT(route.dur_s) + ' · ' + fmtD(route.dist_m); }
+  else $('#sub').textContent = spec.live ? '' : (o ? 'from ' + o.label : '');
+  const SRC = { iphone: 'from iPhone GPS', home: 'home area', today: 'set today', wifi: 'Wi-Fi', ip: 'approximate: guessed from your internet address', 'ip (confirmed)': 'IP, confirmed' };
+  $('#loc').textContent = o ? (SRC[o.source] || o.source || '') + (o.age ? ', ' + o.age : '') : 'location not known: say "set my location"';
+  if (o) { const ch = document.createElement('button'); ch.textContent = 'CHANGE'; ch.style.marginLeft = '6px'; ch.onclick = async () => { const r = await fetch(`/api/map/${id}/change`, { method: 'POST' }).then(x => x.json()).catch(() => ({})); say(r.message || 'say: set my location to your address'); }; $('#loc').appendChild(ch); }
   $('#confirm').style.display = spec.confirm ? 'block' : 'none';
   const md = $('#modes'); md.textContent = '';
   if (spec.routes && Object.keys(spec.routes).length) for (const [k, lab] of [['car', 'CAR'], ['foot', 'WALK'], ['bike', 'BIKE']]) {
-    const r = spec.routes[k], b = document.createElement('button'); b.textContent = lab + (r ? ' ' + fmtT(r.dur_s) : ' -'); b.disabled = !r; b.className = k === spec.mode ? 'on' : ''; b.onclick = () => { spec.mode = k; fetch(`/api/map/${id}/mode?m=${k}`, { method: 'POST' }); draw(false); }; md.appendChild(b); }
-  if (spec.origin) { layers.push(L.marker([spec.origin.lat, spec.origin.lon], { icon: icon('me') }).bindPopup('You: ' + spec.origin.label).addTo(map)); pts.push([spec.origin.lat, spec.origin.lon]); }
-  if (spec.dest) { layers.push(L.marker([spec.dest.lat, spec.dest.lon], { icon: icon('pin') }).bindPopup(spec.dest.label).addTo(map)); pts.push([spec.dest.lat, spec.dest.lon]); }
-  (spec.places || []).forEach(p => { const m = L.marker([p.lat, p.lon], { icon: icon('pl') }).addTo(map);
-    m.bindPopup(`<b>${p.name.replace(/</g, '&lt;')}</b><br>${fmtD(p.dist_m)} away<br><button data-go="${p.id}">GO THERE</button>`); layers.push(m); pts.push([p.lat, p.lon]); });
+    const r = spec.routes[k], b = document.createElement('button'); b.textContent = lab + (r ? ' ' + fmtT(r.dur_s) : ' -'); b.disabled = !r; b.className = k === spec.mode ? 'on' : '';
+    b.onclick = () => { spec.mode = k; fetch(`/api/map/${id}/mode?m=${k}`, { method: 'POST' }); draw(false); }; md.appendChild(b); }
+  if (o) { mk(o.lat, o.lon, 'me', '', 'You: ' + esc(o.label)); pts.push([o.lon, o.lat]); }
+  if (spec.dest) { mk(spec.dest.lat, spec.dest.lon, 'pin', spec.dest.label, esc(spec.dest.label)); pts.push([spec.dest.lon, spec.dest.lat]); }
+  (spec.places || []).forEach(p => { const m = mk(p.lat, p.lon, 'pl', p.name, `<b>${esc(p.name)}</b><br>${fmtD(p.dist_m)} away<br><button data-go="${esc(p.id)}">GO THERE</button>`); pts.push([p.lon, p.lat]); });
   $('#bmac').disabled = $('#bphone').disabled = !spec.gmaps && !(spec.places && spec.places.length);
-  if (fit && pts.length) map.fitBounds(L.latLngBounds(pts).pad(.2), { maxZoom: 16, animate: false }); else if (fit && spec.origin) map.setView([spec.origin.lat, spec.origin.lon], 14);
+  if (fit) {
+    if (pts.length > 1) { const b = new maplibregl.LngLatBounds(pts[0], pts[0]); pts.forEach(p => b.extend(p)); map.fitBounds(b, { padding: 80, maxZoom: 16, animate: false }); }
+    else if (o) map.jumpTo({ center: [o.lon, o.lat], zoom: o.acc && o.acc > 3000 ? 10 : 15.5 });                // street level, or the whole town when the position is only a rough guess
+    else map.jumpTo({ center: [0, 20], zoom: 1.6 });
+  }
 }
-map = L.map('map', { zoomControl: true, attributionControl: true, fadeAnimation: false, zoomAnimation: false }).setView([20, 0], 2);
-const SOURCES = [   // keyless sources, tried in order: OpenStreetMap darkened with a filter (streets stay readable), then Esri's dark gray base
-  { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', opt: { maxZoom: 19, className: 'dark-osm', attribution: '© OpenStreetMap contributors' } },
-  { url: 'https://services.arcgisonline.com/arcgis/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', opt: { maxNativeZoom: 16, maxZoom: 19, attribution: 'Esri, © OpenStreetMap contributors' } }];
-let srcIdx = -1, tl = null;
-function useSource(i) {
-  if (tl) map.removeLayer(tl); srcIdx = i; tileOK = tileBad = 0;
-  if (i >= SOURCES.length) { $('#tiles').style.display = 'block'; return; }
-  tl = L.tileLayer(SOURCES[i].url, SOURCES[i].opt).addTo(map);
-  tl.on('tileload', () => { tileOK++; $('#tiles').style.display = 'none'; });
-  tl.on('tileerror', () => { tileBad++; if (tileBad > 5 && tileOK === 0) useSource(srcIdx + 1); });
+// ---- 3D: tilt + buildings; if it cannot keep up, back to 2D by itself and say so
+let fpsT = 0, fpsN = 0, slow = 0, rafOn = false;
+function fpsLoop(t) {
+  if (!is3d) { rafOn = false; return; }
+  fpsN++; if (t - fpsT >= 3000) { const fps = fpsN * 1000 / (t - fpsT); fpsN = 0; fpsT = t; if (map.isMoving() || map.isZooming()) { if (fps < 20 && ++slow >= 2) { set3d(false); say('3D was too slow on this computer (' + Math.round(fps) + ' fps): back to 2D'); slow = 0; } } else slow = 0; }
+  requestAnimationFrame(fpsLoop);
 }
-useSource(0);
-// a map inside a card/frame that was hidden, zero-size, animating, moved or resized renders black until Leaflet is told: tell it on every size change, and refit if the first size was empty
-let sized = innerWidth > 50 && innerHeight > 50;
-new ResizeObserver(() => { map.invalidateSize(false); if (!sized && innerWidth > 50 && innerHeight > 50) { sized = true; load(); } }).observe(document.getElementById('map'));
-document.addEventListener('visibilitychange', () => map.invalidateSize(false));
-setTimeout(() => { if (tileOK === 0 && srcIdx < SOURCES.length) useSource(srcIdx + 1); }, 7000);     // nothing loaded after 7 s (slow or blocked source): next source, and finally the "tiles are not loading" note
-function routeFootprint() {   // zoomed far out: the route itself is a dot, so ring the start and the end and join them with a dashed straight line
-  if (window.__rf) { window.__rf.forEach(l => map.removeLayer(l)); window.__rf = null; }
-  const r = spec.routes && spec.routes[spec.mode]; if (!r || !r.geometry || r.geometry.length < 2) return;
-  const a = r.geometry[0], b = r.geometry[r.geometry.length - 1], pa = map.latLngToContainerPoint(a), pb = map.latLngToContainerPoint(b);
-  if (pa.distanceTo(pb) >= 28) return;
-  window.__rf = [L.circleMarker(a, { radius: 11, color: '#f2f7ff', weight: 3, fillOpacity: 0, interactive: false }).addTo(map), L.circleMarker(b, { radius: 11, color: '#ff4d6d', weight: 3, fillOpacity: 0, interactive: false }).addTo(map),
-                 L.polyline([a, b], { color: '#f2f7ff', weight: 4, dashArray: '2 8', lineCap: 'round', noClip: true, smoothFactor: 0, interactive: false }).addTo(map)];
+function set3d(on) {
+  is3d = on; $('#d3').textContent = on ? '2D' : '3D'; $('#d3').classList.toggle('on', on);
+  if (map.getLayer('building3d')) map.setLayoutProperty('building3d', 'visibility', on ? 'visible' : 'none');
+  map.easeTo({ pitch: on ? 58 : 0, bearing: on ? map.getBearing() : 0, duration: 450 });
+  if (on && !rafOn) { rafOn = true; fpsN = 0; fpsT = performance.now(); requestAnimationFrame(fpsLoop); }
 }
-map.on('zoomend moveend', routeFootprint);
-map.on('popupopen', e => { const b = e.popup.getElement().querySelector('[data-go]'); if (b) b.onclick = async () => { say('Working out the route…'); const r = await fetch(`/api/map/${id}/goto?pid=${b.dataset.go}`, { method: 'POST' }); if (r.ok) { spec = await r.json(); draw(true); } else say('No route found'); }; });
-$('#byes').onclick = async () => { const r = await fetch(`/api/map/${id}/confirm`, { method: 'POST' }).then(x => x.json()).catch(() => ({})); say(r.message || ''); $('#confirm').style.display = 'none'; };
-for (const [sel, to] of [['#bmac', 'mac'], ['#bphone', 'phone']]) $(sel).onclick = async () => { const r = await fetch(`/api/map/${id}/send?to=${to}`, { method: 'POST' }); const j = await r.json().catch(() => ({})); say(j.message || (r.ok ? 'Sent' : 'Could not send')); };
-load();
+async function start() {
+  let gl = null; try { const c = document.createElement('canvas'); gl = c.getContext('webgl2') || c.getContext('webgl'); } catch (e) {}
+  if (!gl || Q.get('raster')) return toRaster(gl ? 'asked' : 'no webgl');
+  let st; try { st = recolor(await fetch('/api/mapstyle').then(r => { if (!r.ok) throw 0; return r.json(); })); } catch (e) { return toRaster('style'); }
+  try { spec = await fetch('/api/map/' + id).then(r => { if (!r.ok) throw 0; return r.json(); });
+    if (Q.get('lat') && Q.get('lon')) { spec.dest = { lat: +Q.get('lat'), lon: +Q.get('lon'), label: Q.get('label') || 'Place' }; spec.title = spec.dest.label; spec.live = false; } }
+  catch (e) { $('#title').textContent = 'MAP UNAVAILABLE'; $('#sub').textContent = 'this map has expired: ask for it again'; $('#send').style.display = 'none'; spec = { routes: {}, places: [] }; }
+  try {
+    map = new maplibregl.Map({ container: 'map', style: st, center: [0, 20], zoom: 1.5, minZoom: 1, maxZoom: 19, attributionControl: false, pixelRatio: 1, fadeDuration: 0, maxPitch: 70, hash: false, cooperativeGestures: false });
+  } catch (e) { return toRaster('init'); }
+  map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: '© OpenStreetMap contributors · OpenFreeMap' }), 'bottom-left');
+  map.touchZoomRotate.enableRotation();
+  map.on('error', e => { (window.__mapErrs = window.__mapErrs || []).push(String((e.error && e.error.message) || e.message || e).slice(0, 160)); tileBad++; if (tileBad > 8 && tileOK === 0) { $('#tiles').style.display = 'block'; } });
+  map.on('data', e => { if (e.dataType === 'source' && e.tile) { tileOK++; $('#tiles').style.display = 'none'; } });
+  map.once('load', () => { ready = true; draw(true); if (Q.get('3d')) set3d(true); window.__mapReady = true; });
+  let waited = 0; const wd = setInterval(() => { if (ready || Q.get('nofb')) return clearInterval(wd); if (document.visibilityState === 'visible' && ++waited >= 25) { clearInterval(wd); toRaster('slow start'); } }, 1000);        // only a VISIBLE page that still has not drawn after 25 s drops to the raster map
+  $('#zin').onclick = () => map.zoomIn(); $('#zout').onclick = () => map.zoomOut();
+  $('#me').onclick = () => { const o = spec && spec.origin; if (o) map.easeTo({ center: [o.lon, o.lat], zoom: Math.max(map.getZoom(), 15), duration: 500 }); else say('I do not know where you are yet: say "set my location"'); };
+  $('#d3').onclick = () => set3d(!is3d);
+  $('#bmac').onclick = () => send('mac'); $('#bphone').onclick = () => send('phone');
+  $('#byes').onclick = async () => { const r = await fetch(`/api/map/${id}/confirm`, { method: 'POST' }).then(x => x.json()).catch(() => ({})); say(r.message || 'saved'); $('#confirm').style.display = 'none'; };
+  document.addEventListener('click', async e => { const g = e.target.closest('[data-go]'); if (!g) return; const r = await fetch(`/api/map/${id}/goto?pid=${g.dataset.go}`, { method: 'POST' }).then(x => x.ok ? x.json() : null).catch(() => null); if (r) { spec = r; draw(true); } });
+  new ResizeObserver(() => map.resize()).observe(document.body);
+}
+async function send(to) { const r = await fetch(`/api/map/${id}/send?to=${to}`, { method: 'POST' }).then(x => x.json()).catch(() => ({})); say(r.message || 'sent'); }
+start();
 </script></body></html>
