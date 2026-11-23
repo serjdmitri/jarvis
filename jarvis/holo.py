@@ -374,9 +374,9 @@ def parse_control(text, parts):
 
 def parse_library(text):
     low = re.sub(r"\s+", " ", (text or "").lower().strip(" .?!"))
-    m = re.fullmatch(r"(?:please )?save (?:this|it|the model|this model|the scene)(?: as| to| under)? (?:the )?(.+?)(?: scene)?", low)
-    if m and not re.fullmatch(r"(?:this|it)", m.group(1)):
-        return {"op": "save", "name": m.group(1)}
+    m = re.fullmatch(r"(?:please )?save (?:this|it|the model|this model|the scene)(?: as| to| under)? (?:the )?(?!(?:my |the )?(?:mac|macbook|phone|iphone|downloads|computer)\b)(.+?)(?: scene)?", low)
+    if m and not re.fullmatch(r"(?:this|it)", m.group(1)) and not re.match(r"(?:to |onto |on |in )?(?:my |the )?(?:mac|macbook|phone|iphone|downloads|computer|laptop)\b", m.group(1)):
+        return {"op": "save", "name": m.group(1)}                         # "save this to my Mac" is a send, not a scene called "to my mac"
     if re.fullmatch(r"(?:please )?(?:list|show|what are)(?: me)?(?: all)? (?:of )?(?:my )?(?:saved )?(?:scenes|models|3 ?d (?:models|scenes|history)|holograms)(?: list)?|what (?:scenes|models) (?:do i have|have i saved)", low):
         return {"op": "list"}
     if re.fullmatch(r"(?:please )?(?:show|open|bring back|load)(?: me)? (?:my )?(?:last|previous|latest) (?:model|3 ?d(?: model)?|hologram|scene)", low):

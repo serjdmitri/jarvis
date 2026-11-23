@@ -100,8 +100,17 @@ export function mount(host, card, api) {
   const lab = new Map(), pins = [], tmpV = new THREE.Vector3(), ray = new THREE.Raycaster();
   function finish() {
     const box = new THREE.Box3().setFromObject(root), sz = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
-    frameR = Math.max(sz.x, sz.y, sz.z, 1) * 0.8; controls.target.copy(c); st.home = { target: c.clone(), dist: frameR * 2.1 };
-    cam.position.set(c.x + frameR * 1.3, c.y + frameR * 0.9, c.z + frameR * 1.9); controls.minDistance = frameR * 0.3; controls.maxDistance = frameR * 6; controls.update();
+    frameR = Math.max(sz.x, sz.y, sz.z, 1) * 0.8; controls.target.copy(c);
+    const sph = box.getBoundingSphere(new THREE.Sphere()), asp = Math.max(0.3, (stage.clientWidth || 300) / (stage.clientHeight || 200)), vf = cam.fov * Math.PI / 180, hf = 2 * Math.atan(Math.tan(vf / 2) * asp);
+    const fit = Math.max(0.3, sph.radius) / Math.sin(Math.min(vf, hf) / 2) * 1.08, dir = new THREE.Vector3(1.3, 0.9, 1.9).normalize();               // the whole model fills the stage, whatever its shape (a wide scene in a short stage was tiny)
+    let dist = Math.min(fit, frameR * 2.1 * 1.6); cam.aspect = asp; cam.updateProjectionMatrix();
+    for (let it = 0; it < 4; it++) {                                                                      // tighten: project the 8 corners of the box and scale the distance until they just fill 86% of the stage
+      cam.position.copy(c).addScaledVector(dir, dist); cam.lookAt(c); cam.updateMatrixWorld(true); let m = 0.01;
+      for (let q = 0; q < 8; q++) { tmpV.set(q & 1 ? box.max.x : box.min.x, q & 2 ? box.max.y : box.min.y, q & 4 ? box.max.z : box.min.z).project(cam); m = Math.max(m, Math.abs(tmpV.x), Math.abs(tmpV.y)); }
+      dist = Math.max(sph.radius * 0.6, dist * Math.min(1.6, Math.max(0.5, m / 0.86)));
+    }
+    st.home = { target: c.clone(), dist };
+    cam.position.copy(c).addScaledVector(dir, dist); controls.minDistance = frameR * 0.3; controls.maxDistance = frameR * 6; controls.update();
     const floorY = box.min.y - 0.05, grid = new THREE.GridHelper(Math.ceil(frameR * 4), look().lite ? 8 : 20, 0x335577, 0x1b2a40); grid.position.set(c.x, floorY, c.z); grid.material.transparent = true; grid.material.opacity = 0.35; grid.material.clippingPlanes = [plane]; mats.push(grid.material); geos.push(grid.geometry); scene.add(grid); st.grid = grid;
     cutRange = Math.max(sz.x, sz.y, sz.z) * 0.6; st.center = c.clone();
     for (const id of order) { const p = parts.get(id).p, d = el('div', 'hlab', p.label.toUpperCase()); d.dataset.id = id; d.onclick = e => { e.stopPropagation(); select(id); }; over.append(d); const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line'); svg.append(ln); lab.set(id, { d, ln }); }
@@ -117,11 +126,21 @@ export function mount(host, card, api) {
   function project(v) { tmpV.copy(v).project(cam); return { x: (tmpV.x * 0.5 + 0.5) * stage.clientWidth, y: (-tmpV.y * 0.5 + 0.5) * stage.clientHeight, z: tmpV.z }; }
   function layout() {
     const w = stage.clientWidth, h = stage.clientHeight, k = order.length;
+    const items = [];
     order.forEach((id, i) => {
-      const L = lab.get(id), e = parts.get(id); const hide = !st.labels || st.hidden.has(id) || (k > 16 && st.sel !== id && !L.show);
+      const L = lab.get(id), e = parts.get(id);
+      const sub = k > 6 && e.p.parent && st.sel !== id && st.sel !== e.p.parent && !L.show;              // small sub-parts (colour bands, pins) only get a label when they or their parent are selected: no pile-up
+      const hide = !st.labels || st.hidden.has(id) || sub || (k > 16 && st.sel !== id && !L.show);
       if (hide) { L.d.style.display = 'none'; L.ln.style.display = 'none'; return; }
       const c = project(center(id)); if (c.z > 1 || c.x < -20 || c.x > w + 20 || c.y < -20 || c.y > h + 20) { L.d.style.display = 'none'; L.ln.style.display = 'none'; return; }
       const side = (i % 2 ? 1 : -1), lx = Math.max(6, Math.min(w - 6, c.x + side * (46 + (i % 3) * 14))), ly = Math.max(10, Math.min(h - 10, c.y - 26 - (i % 3) * 10));
+      items.push({ id, L, c, side, lx, ly });
+    });
+    [-1, 1].forEach(sd => {                                                                              // labels on the same side keep at least 20 px apart (top to bottom), so none sits on another
+      const g = items.filter(o => o.side === sd).sort((a, b) => a.ly - b.ly); let prev = -1e9;
+      g.forEach(o => { o.ly = Math.max(o.ly, prev + 20); prev = o.ly; }); for (let n = g.length - 1, lim = h - 10; n >= 0; n--) { g[n].ly = Math.min(g[n].ly, lim); lim = g[n].ly - 20; }
+    });
+    items.forEach(o => { const { id, L, c, side, lx, ly } = o;
       L.d.style.display = ''; L.d.style.left = lx + 'px'; L.d.style.top = ly + 'px'; L.d.style.transform = side > 0 ? 'translate(0,-50%)' : 'translate(-100%,-50%)'; L.d.classList.toggle('sel', st.sel === id);
       L.ln.style.display = ''; L.ln.setAttribute('x1', c.x); L.ln.setAttribute('y1', c.y); L.ln.setAttribute('x2', lx); L.ln.setAttribute('y2', ly); L.ln.setAttribute('class', st.sel === id ? 'sel' : '');
     });

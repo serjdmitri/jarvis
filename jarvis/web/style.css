@@ -70,10 +70,12 @@ html.hasfull #cap { display:none; }
 
 /* cards: black panel, thin pale frame, corner brackets, tiny uppercase mono title, meta footer */
 .card { position:absolute; width:var(--cw,250px); min-height:90px; max-height:46vh; display:flex; flex-direction:column; pointer-events:auto; opacity:0; transform:scale(.94);
-  transition:opacity .35s ease, transform .35s ease; background:linear-gradient(var(--acc),var(--acc)) right 0 top 30% / 3px 12px no-repeat, linear-gradient(var(--acc),var(--acc)) right 0 top 66% / 3px 12px no-repeat, var(--panel);
+  transition:opacity .22s ease-out, transform .22s ease-out; transform-origin:50% 50%; background:linear-gradient(var(--acc),var(--acc)) right 0 top 30% / 3px 12px no-repeat, linear-gradient(var(--acc),var(--acc)) right 0 top 66% / 3px 12px no-repeat, var(--panel);
   border:1px solid var(--card); box-shadow:0 0 14px var(--glow), inset 0 0 0 3px rgba(0,0,0,.6); }
 .lite .card { box-shadow:none; }
-.card.in { opacity:1; transform:none; } .card.out { opacity:0; transform:scale(.94); }
+.card.in { opacity:1; transform:none; } .card.out { opacity:0; transform:scale(.94); transition-duration:.18s; } .card.anim { will-change:transform,opacity; } .card.full { box-shadow:inset 0 0 0 3px rgba(0,0,0,.6); }             /* a screen-sized glow blur is the most expensive thing on this GPU; the full card keeps only its edge */
+.card.anim:not(.out) { box-shadow:inset 0 0 0 3px rgba(0,0,0,.6); }          /* and no blurred shadow while it animates */
+.lite .card, .lite .card.out { transform:none; transition:opacity .12s linear; }
 .card::before, .card::after { content:""; position:absolute; width:11px; height:11px; pointer-events:none; }
 .card::before { left:-4px; top:-4px; border-left:2px solid #fff; border-top:2px solid #fff; }
 .card::after { right:-4px; bottom:-4px; border-right:2px solid #fff; border-bottom:2px solid #fff; }
@@ -94,7 +96,7 @@ html.hasfull #cap { display:none; }
 
 /* full-screen card (kept clear of every corner) */
 .card.full { background:var(--bg) !important; left:var(--edge) !important; top:108px !important; width:calc(100vw - var(--edge)*2) !important; max-height:none !important; z-index:11;
-  height:calc(100vh - 108px - 100px) !important; animation:pop .28s ease; }
+  height:calc(100vh - 108px - 100px) !important; }
 @keyframes pop { from { transform:scale(.96); opacity:.4; } to { transform:none; opacity:1; } }
 .card.full .body { display:flex; flex-direction:column; font-size:15px; line-height:1.4; }
 .card.full .body.media { padding:0; }
@@ -307,8 +309,8 @@ html.looking #fx, html.looking #center, html.looking #orbhit { z-index:28; }
 #lkinfo { position:absolute; left:14px; top:14px; font:700 11px "Noto Sans Mono",monospace; letter-spacing:.2em; color:var(--fg); text-shadow:0 0 8px var(--glow); } #lkinfo.live::before { content:"● "; color:#ff4d6d; }
 #lkcard { position:absolute; display:none; max-width:240px; padding:8px 10px; font-size:12px; line-height:1.35; background:rgba(4,8,22,.92); border:1px solid var(--acc); box-shadow:0 0 14px var(--glow); color:#fff; z-index:5; } #lkcard b { display:block; letter-spacing:.14em; font-size:11px; color:var(--acc); margin-bottom:3px; }
 #lkvig { position:absolute; inset:0; pointer-events:none; z-index:3; background:radial-gradient(ellipse at 50% 50%, transparent 55%, #02040c 100%), linear-gradient(90deg,#02040c, transparent 9%, transparent 91%, #02040c), linear-gradient(#02040c, transparent 10%, transparent 90%, #02040c); }   /* the picture fades into black on all four edges */
-#lkdots { position:absolute; left:14px; bottom:12px; z-index:30; width:44px; height:44px; display:grid; place-items:center; background:rgba(4,8,22,.45); border:1px solid var(--line); color:var(--fg); cursor:pointer; }
-#lkopts { position:absolute; left:66px; bottom:12px; z-index:30; display:flex; gap:6px; padding:4px; background:rgba(4,8,22,.28); border:1px solid var(--line); opacity:0; transform:translateX(-14px); pointer-events:none; transition:opacity .18s ease-out, transform .18s ease-out; }
+#lkdots { position:absolute; left:14px; top:62px; z-index:30; width:44px; height:44px; display:grid; place-items:center; background:rgba(4,8,22,.45); border:1px solid var(--line); color:var(--fg); cursor:pointer; }
+#lkopts { position:absolute; left:14px; top:112px; z-index:71; display:flex; flex-direction:column; gap:6px; padding:4px; background:rgba(4,8,22,.28); border:1px solid var(--line); opacity:0; transform:translateY(-10px); pointer-events:none; transition:opacity .18s ease-out, transform .18s ease-out; }
 #lkopts.on { opacity:1; transform:none; pointer-events:auto; } #lkopts .box { min-height:36px; padding:6px 10px; font-size:10px; letter-spacing:.1em; background:rgba(4,8,22,.4); }
 #lkagain { position:absolute; left:50%; bottom:64px; transform:translateX(-50%); z-index:30; display:none; min-height:40px; padding:6px 14px; font-size:10px; letter-spacing:.14em; background:rgba(4,8,22,.55); } #lkagain.on { display:block; }
 #lkboxes.stale .lkb { opacity:.35; transition:opacity 1.5s; }
@@ -460,3 +462,66 @@ html.away #idlescr { opacity:.35; }                                             
 @keyframes cblink { 0%,100% { opacity:0; } 50% { opacity:.85; } } @keyframes cflash { 0% { opacity:.9; } 100% { opacity:0; } }
 /* whisper mode: softer visuals, nothing blinks */
 html.whisper #fx, html.whisper #center { opacity:.6; } html.whisper * { animation-duration:0s !important; animation-iteration-count:1 !important; } html.whisper .card { box-shadow:none; }
+/* camera view: the tiny DESKTOP icon sat exactly under the three-dots button and took its taps (it switched to the desktop): in the look view it moves to the top-left corner */
+html.looking #abort { bottom:auto; top:12px; left:14px; }
+html.looking #lkdots { z-index:70; }
+
+/* snapshot card: a still copy of the frame you asked about, beside the live view (which keeps running underneath) */
+#lksnap { position:absolute; left:14px; bottom:70px; width:min(250px,42vw); z-index:32; display:none; background:rgba(4,8,22,.92); border:1px solid var(--acc); box-shadow:0 0 14px var(--glow); padding:6px; transform-origin:left bottom; }
+#lksnap.on { display:block; animation:lksnin .22s ease-out; } @keyframes lksnin { from { opacity:0; transform:translateY(8px) scale(.96); } }
+#lksnapimg { display:block; width:100%; aspect-ratio:4/3; object-fit:cover; } #lksnaptxt { font-size:12px; line-height:1.35; color:#fff; margin:6px 2px; max-height:96px; overflow:auto; scrollbar-width:none; }
+#lksnap .lksb { display:flex; gap:6px; flex-wrap:wrap; } #lksnap .lksb .box { min-height:40px; padding:4px 8px; font-size:9px; letter-spacing:.12em; }
+#lksnap.big { left:50%; bottom:auto; top:50%; width:min(86vw,720px); transform:translate(-50%,-50%); z-index:60; } #lksnap.big #lksnapimg { aspect-ratio:auto; max-height:62vh; object-fit:contain; }
+
+.lkb { transition:translate .14s linear, opacity .3s; will-change:translate; } .lkb.lost { opacity:.4; border-style:dashed; } .lkb.lost span { font-style:italic; }
+
+/* camera helper chips (large touch targets, bottom edge, nothing in the top-right corner) */
+#lkchips { position:absolute; left:64px; top:112px; z-index:71; display:flex; flex-direction:column; gap:6px; padding:4px; background:rgba(4,8,22,.28); border:1px solid var(--line); opacity:0; transform:translateY(-10px); pointer-events:none; transition:opacity .18s ease-out, transform .18s ease-out; }
+#lkchips.on { opacity:1; transform:none; pointer-events:auto; }
+#lktgt { position:absolute; left:64px; top:62px; z-index:72; width:44px; height:44px; display:grid; place-items:center; background:rgba(4,8,22,.45); border:1px solid var(--line); color:var(--fg); cursor:pointer; }
+#lkx { position:absolute; left:14px; bottom:12px; z-index:80; min-height:44px; min-width:96px; padding:6px 14px; font-size:11px; font-weight:700; letter-spacing:.16em; background:rgba(4,8,22,.7); }
+#lkchips .lkchip { min-height:44px; min-width:150px; padding:6px 12px; font-size:10px; letter-spacing:.14em; background:rgba(4,8,22,.62); white-space:nowrap; text-align:left; }
+html.looking #lkagain { bottom:68px; }
+#lkconn { position:absolute; z-index:6; pointer-events:none; display:none; } #lkconn.on { display:block; }
+#lkline { stroke-width:6; stroke-linecap:round; stroke-dasharray:18 10; vector-effect:non-scaling-stroke; filter:drop-shadow(0 0 6px currentColor); } #lkconn { color:#ffb347; } #lkconn.close { color:#4ae0ff; } #lkconn.aligned, #lkconn.touch { color:#5dff9a; }
+#lkline { stroke:currentColor; } #lkpa, #lkpb { fill:none; stroke:currentColor; stroke-width:4; vector-effect:non-scaling-stroke; }
+#lkstep { position:absolute; left:50%; bottom:68px; transform:translateX(-50%); z-index:33; display:none; padding:8px 16px; font-size:15px; letter-spacing:.08em; color:#fff; background:rgba(4,8,22,.86); border:1px solid var(--acc); box-shadow:0 0 14px var(--glow); max-width:90vw; text-align:center; } #lkstep.on { display:block; }
+#lkconf { position:absolute; left:50%; bottom:116px; transform:translateX(-50%); z-index:34; display:none; min-height:48px; padding:6px 18px; } #lkconf.on { display:block; }
+
+#lksnap .lksb .box { flex:1 1 auto; padding:4px 4px; min-width:0; } html.looking #lkinfo { left:64px; }
+
+/* the follow-up window ring: bottom-centre above the dock, thin, no sound, no text */
+#winring { position:fixed; left:50%; bottom:74px; width:34px; height:34px; margin-left:-17px; z-index:5; opacity:0; pointer-events:none; transition:opacity .25s; }
+#winring.on { opacity:.85; } #winring svg { width:100%; height:100%; transform:rotate(-90deg); }
+#winring circle { fill:none; stroke-width:2.2; } #winring .tr { stroke:var(--line); } #winring .fg { stroke:var(--acc); stroke-linecap:round; stroke-dasharray:106.8; stroke-dashoffset:0; filter:drop-shadow(0 0 3px var(--glow)); }
+@keyframes winring { to { stroke-dashoffset:106.8; } }
+html.looking #winring, html.idlescr #winring { display:none; }
+
+/* the clock stays gentle: the whole face drifts slowly, dims, and says quietly whether the mic is live */
+#icwrap { transition:transform 50s linear; }
+.ic-mic { position:relative; margin-top:1.2vh; font-size:min(1.3vh,1.6vw); letter-spacing:.22em; color:var(--dim); opacity:.7; } .ic-mic.mu { color:#ffb347; opacity:.9; }
+#idlescr.dim { filter:brightness(.5); transition:filter 4s; }
+
+/* the floating map: no frame, no border, no blur; the edges are feathered inside the map page by a mask (measured on this GPU) */
+#mapfloat { position:fixed; left:3%; right:3%; top:3%; bottom:8%; z-index:6; opacity:0; transition:opacity .22s ease-out; pointer-events:none; }
+#mapfloat.on { opacity:1; } #mapfloat iframe { width:100%; height:100%; border:0; background:transparent; color-scheme:normal; pointer-events:auto; }
+html.mapfloat.looking #mapfloat, html.idlescr #mapfloat { display:none; }
+
+/* memory map card */
+.mm { position:relative; width:100%; height:100%; min-height:260px; display:flex; flex-direction:column; } .mm canvas { flex:1; width:100%; min-height:200px; touch-action:none; display:block; background:transparent; }
+.mminfo { padding:6px 10px; font-size:10px; letter-spacing:.1em; color:var(--fg); min-height:2.4em; } .mmbar { display:flex; align-items:center; gap:8px; padding:4px 8px 8px; } .mmbar .box { min-width:44px; min-height:40px; } .mmkey { font-size:8px; letter-spacing:.14em; color:var(--dim); }
+
+/* connections rows */
+.crows { display:flex; flex-direction:column; gap:6px; } .crow { display:flex; align-items:center; gap:10px; padding:6px 4px; border-bottom:1px solid rgba(130,170,255,.15); min-height:48px; }
+.crow i { flex:0 0 12px; width:12px; height:12px; border-radius:50%; background:#8aa0cf; box-shadow:0 0 6px currentColor; } .crow.green i { background:#3ddc84; color:#3ddc84; } .crow.amber i { background:#ffb347; color:#ffb347; } .crow.red i { background:#ff4d6d; color:#ff4d6d; }
+.crow .ctx { flex:1; min-width:0; display:flex; flex-direction:column; gap:1px; } .crow b { font-size:11px; letter-spacing:.1em; } .crow small { font-size:9px; color:var(--dim); line-height:1.35; } .crow small.cl { opacity:.7; }
+.cbtns { display:flex; gap:6px; flex:0 0 auto; } .cbtns .box { min-width:64px; min-height:40px; font-size:10px; }
+
+/* on-screen keyboard + system confirm */
+#osk { position:fixed; left:0; right:0; bottom:0; z-index:90; padding:8px 8px 10px; background:rgba(4,8,22,.96); border-top:1px solid var(--line); display:flex; flex-direction:column; gap:6px; } #osk[hidden], #sysconf[hidden] { display:none; }
+#osk .ork { display:flex; gap:6px; justify-content:center; } #osk .ok { flex:1 1 0; min-height:52px; max-width:110px; font-size:18px; font-weight:600; letter-spacing:0; padding:0; } #osk .ok.wide { max-width:180px; font-size:12px; letter-spacing:.1em; } #osk .ok.on { border-color:var(--acc); box-shadow:0 0 12px var(--acc); }
+html.oskon #settings .sp-body { padding-bottom:300px; }
+#sysconf { position:fixed; inset:0; z-index:95; display:grid; place-items:center; background:rgba(2,4,12,.72); } .sc-box { padding:22px 26px; background:#050a1c; border:1px solid var(--line); text-align:center; } .sc-box b { display:block; font-size:16px; letter-spacing:.1em; margin-bottom:14px; } .sc-b { display:flex; gap:12px; justify-content:center; } .sc-b .box { min-width:130px; min-height:56px; font-size:13px; }
+.sysb { flex-wrap:wrap; justify-content:flex-end; } #wf-pwi { min-height:44px; font-size:15px; background:rgba(4,8,22,.6); color:var(--fg); border:1px solid var(--line); padding:0 10px; }
+[hidden] { display:none !important; }
+.srow.wide:has(.sysb) { flex-wrap:wrap; } .cbtns.sysb { flex:1 1 100%; max-width:100%; justify-content:flex-start; }

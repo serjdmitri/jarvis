@@ -13,6 +13,8 @@ def _mins(hhmm):
 
 
 def active(now=None):
+    if settings.get("focus_mode"):
+        return True                                   # focus mode: the same silence as quiet hours (timers and alarms still sound)
     f, t = settings.get("quiet_from"), settings.get("quiet_to")
     if not f or not t:
         return False

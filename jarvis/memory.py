@@ -15,7 +15,7 @@ STOP = set("a an the is are was were be been am i you he she it we they my your 
            "what who when where why how which that this these those about tell please just really very some any there here from by as if so than then also have has had get got "
            "remember know like likes usual favourite favorite called name".split())
 SECRET = re.compile(r"\b(pass(?:word|code|phrase)|passwd|pin(?: number| code)?|cvv|cvc|security code|card number|credit card|debit card|iban|account number|routing number|ssn|social security|"
-                    r"api[ -]?key|secret|token|private key|seed phrase|recovery (?:code|phrase)|otp|2fa|verification code|pairing code|topic)\b", re.I)
+                    r"api[ -]?key|secret|token|private key|seed phrase|recovery (?:code|phrase)|otp|2fa|verification code|pairing code|topic|serial(?: number)?|licen[cs]e (?:key|number)|passport number|driver'?s licen[cs]e)\b", re.I)
 
 
 def looks_secret(text):

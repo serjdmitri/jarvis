@@ -25,6 +25,9 @@
 
 <!-- idle chrome: tiny status (bottom-left), one dim row of icons (bottom-centre), one tiny menu icon (top-right) -->
 <div id="status"><div id="stat">LOADING</div><div id="conn">CONNECTED</div><button class="ico" id="i-mute" aria-label="mute: nothing listens for wake phrases"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path class="slash" d="M4 4L20 20"/></svg><span id="mutel">MIC LIVE</span></button><button id="pdot" hidden aria-label="desk presence camera is on: tap to pause"><i></i><span>CAM ON</span></button></div>
+<div id="sysconf" hidden role="alertdialog" aria-labelledby="sysq"><div class="sc-box"><b id="sysq"></b><div class="sc-b"><button id="sys-yes" class="box">YES</button><button id="sys-no" class="box">CANCEL</button></div></div></div>
+<div id="osk" hidden aria-label="on-screen keyboard"></div>
+<div id="winring" aria-hidden="true"><svg viewBox="0 0 40 40"><circle class="tr" cx="20" cy="20" r="17"/><circle class="fg" cx="20" cy="20" r="17"/></svg></div>
 <div id="cap"><div class="ai"></div></div>
 
 <button id="abort" class="tiny box" aria-label="back to the normal desktop (SUPER+ESCAPE)" title="desktop (back to the normal desktop; SUPER+ESCAPE). Jarvis keeps running."><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="12" rx="1"/><path d="M8 20h8M12 16v4"/></svg></button>
@@ -52,12 +55,14 @@
       <div class="srow wide"><div class="sl"><b>Volume</b><small>The speakers' volume.</small></div>
         <div class="slw"><button id="s-vm" class="box sbtn" aria-label="quieter">−</button><input type="range" id="s-vol" class="bigrange" min="0" max="100" step="5" value="50" aria-label="volume"><button id="s-vp" class="box sbtn" aria-label="louder">+</button></div><div class="sval" id="s-voll">50%</div></div>
       <div class="srow"><div class="sl"><b>Wake and finish sounds</b><small>A short chime in the persona's style the moment it hears its name, another when it has heard you, and a soft tone on errors.</small></div><button id="s-chime" class="box">SOUNDS · ON</button></div>
-      <div class="srow"><div class="sl"><b>Chime volume</b></div><div class="slw"><button id="s-cvm" class="box sbtn" aria-label="quieter">−</button><input type="range" id="s-cvol" class="bigrange" min="0" max="100" step="5" value="60" aria-label="chime volume"><button id="s-cvp" class="box sbtn" aria-label="louder">+</button></div><div class="sval" id="s-cvoll">60%</div></div>
+      <div class="srow wide"><div class="sl"><b>Chime volume</b></div><div class="slw"><button id="s-cvm" class="box sbtn" aria-label="quieter">−</button><input type="range" id="s-cvol" class="bigrange" min="0" max="100" step="5" value="60" aria-label="chime volume"><button id="s-cvp" class="box sbtn" aria-label="louder">+</button></div><div class="sval" id="s-cvoll">60%</div></div>
       <div class="srow"><div class="sl"><b>Feelings</b><small>The orb's colour and motion and the voice follow the mood of what is said (subtle). Off = always neutral.</small></div><button id="s-feel" class="box">FEELINGS · ON</button></div>
       <div class="srow"><div class="sl"><b>Type box shortcut</b><small>A small text field near the pointer, over any app: type, Enter, and the answer comes back as a card or spoken. Alt+Space, Ctrl+Shift+Space, both, or off.</small></div><button id="s-tbox" class="box">ALT+SPACE</button></div>
       <div class="srow"><div class="sl"><b>Show me how</b><small>Ask "how do I change the font size in this app?": I look at your screen once per step, point at the control with a glowing ring and say what to do. I never click or type for you. Say stop to end it.</small></div><button id="s-howto" class="box">SHOW ME HOW</button></div>
       <div class="srow"><div class="sl"><b>Circle to ask</b><small>Draw a circle or rectangle on the screen with your finger or the mouse and ask about it, in either order. Also SUPER+SHIFT+C. Tap outside to cancel.</small></div><button id="s-circle" class="box">CIRCLE</button></div>
       <div class="srow"><div class="sl"><b>Listening patience</b><small>How long I wait after you stop talking before I answer. Fast (default) is quickest; patient waits longer if you pause while you think.</small></div><button id="s-patience" class="box">PATIENCE · FAST</button></div>
+      <div class="srow"><div class="sl"><b>Morning brief on first wake</b><small>Off by default. The first time you wake me each day I give the weather and your reminders.</small></div><button id="s-mbrief" class="box">MORNING BRIEF · OFF</button></div>
+      <div class="srow"><div class="sl"><b>Keep listening after a command</b><small>After I answer, I keep listening for a follow-up for this long, with no "hey Jarvis". A small ring counts it down. Say "that's all" or "stop listening" to close it.</small></div><button id="s-lwin" class="box">KEEP LISTENING · 20 S</button></div>
       <div class="srow"><div class="sl"><b>Orb position</b><small>Hold the small orb for half a second, then drag it anywhere. It is remembered and never goes off screen. Say "move to the top", "move left", "put the orb in the middle".</small></div><button id="s-orbreset" class="box">RESET POSITION</button></div>
       <div class="srow"><div class="sl"><b>Keep the orb away from</b><small>A corner it will never sit in (for a cracked corner of the screen).</small></div><button id="s-orbavoid" class="box">TOP-RIGHT</button></div>
       <div class="srow"><div class="sl"><b>Keep phone photos</b><small>Off (default): a photo sent from the iPhone shortcut is deleted as soon as I have answered. On: it is kept in the shots folder.</small></div><button id="s-keepph" class="box">KEEP PHOTOS · OFF</button></div>
@@ -107,8 +112,21 @@
       <div class="srow"><div class="sl"><b>Hey Jarvis from my iPhone</b><small>A Shortcut records 10 seconds and Jarvis answers on the phone. Home Wi-Fi only; off until you turn it on.</small></div><button id="s-iphone" class="box">IPHONE VOICE</button></div>
       <div class="srow"><div class="sl"><b>Pair my Mac</b><small>Send links and files to your Mac. Shows the steps and a code.</small></div><button id="s-mac" class="box">PAIR MY MAC</button></div></div></section>
     <section class="sg" data-sg="music"><h3 class="sgh">MUSIC</h3><div class="sgb">
-      <div class="srow"><div class="sl"><b>Spotify</b><small>Step-by-step setup (needs Premium).</small></div><button id="s-spot" class="box">SET UP SPOTIFY</button></div></div></section>
+      <div class="srow"><div class="sl"><b>Spotify</b><small>Step-by-step setup (needs Premium).</small></div><button id="s-spot" class="box">SET UP SPOTIFY</button></div>
+      <div class="srow wide"><div class="sl"><b>Player and speakers</b><small id="s-audiotxt">Loading…</small></div><button id="s-audior" class="box">REFRESH</button></div>
+      <div class="srow"><div class="sl"><b>Maximum music volume</b><small>The Jarvis player never goes louder than this, however it is asked.</small></div><button id="s-vmax" class="box">MAX · 80%</button></div></div></section>
+    <section class="sg" data-sg="wifi"><h3 class="sgh">WI-FI AND SYSTEM</h3><div class="sgb">
+      <div class="srow wide"><div class="sl"><b>Wi-Fi</b><small id="wf-state">Tap SCAN to see the networks around.</small></div><div class="cbtns"><button id="wf-scan" class="box">SCAN</button></div></div>
+      <div id="wf-list" class="crows"></div>
+      <div id="wf-pw" class="srow wide" hidden><div class="sl"><b id="wf-pwl">Password</b><small>Typed on the on-screen keyboard. It goes straight to the network manager and is never saved or shown by Jarvis.</small></div><div class="cbtns"><input id="wf-pwi" type="password" autocomplete="off" placeholder="password"><button id="wf-go" class="box">CONNECT</button></div></div>
+      <div class="srow wide"><div class="sl"><b>System</b><small>Restart and shut down ask you to confirm first.</small></div><div class="cbtns sysb"><button class="box" data-sys="restart_jarvis">RESTART JARVIS</button><button class="box" data-sys="reboot">RESTART THE GO</button><button class="box" data-sys="poweroff">SHUT DOWN</button><button class="box" data-sys="screen_off">SCREEN OFF</button><button class="box" data-sys="brightness" data-arg="-15">DIMMER</button><button class="box" data-sys="brightness" data-arg="+15">BRIGHTER</button></div></div>
+      <div class="srow"><div class="sl"><b>On-screen keyboard</b><small>Opens by itself only when you touch a text box. It has a dictate button. Off if you use a keyboard.</small></div><button id="s-osk" class="box">ON-SCREEN KEYBOARD · ON</button></div></div></section>
+    <section class="sg" data-sg="connections"><h3 class="sgh">CONNECTIONS</h3><div class="sgb">
+      <div id="conn-rows" class="crows"></div>
+      <div class="srow wide"><div class="sl"><b>Pairing without a keyboard</b><small>The pairing code shows once, only while pairing, and is gone afterwards. Do not photograph it. A sleeping Mac cannot be woken by Jarvis: jobs wait until it is awake.</small></div><div class="cbtns"><button id="c-pairmac" class="box">PAIR MAC</button><button id="c-all" class="box">CHECK ALL</button></div></div></div></section>
     <section class="sg" data-sg="advanced"><h3 class="sgh">ADVANCED</h3><div class="sgb">
+      <div class="srow"><div class="sl"><b>Speed log (PERF)</b><small>The last 50 timings against their targets: commands, screens and the first spoken word.</small></div><button id="s-perf" class="box">SHOW PERF</button></div>
+      <div class="srow"><div class="sl"><b>Not understood</b><small>The last 20 phrases Jarvis did not understand, so the patterns get fixed.</small></div><button id="s-unk" class="box">SHOW LIST</button></div>
       <div class="srow"><div class="sl"><b>History</b><small>Everything said this session.</small></div><button id="s-hist" class="box">OPEN HISTORY</button></div>
       <div class="srow"><div class="sl"><b>Activity</b><small>What Jarvis just did.</small></div><button id="s-act" class="box">WHAT HAPPENED</button></div>
       <div class="srow"><div class="sl"><b>Camera source override</b><small>Normally automatic: the phone camera, then a USB webcam, then the screen. Only change this to force one.</small></div><button id="s-src" class="box">CAMERA SOURCE</button></div>
@@ -123,7 +141,13 @@
 <div id="look" aria-hidden="true">
   <div id="lkstage"><img id="lkimg" alt="" referrerpolicy="no-referrer"><div id="lkboxes"></div><div id="lkscan"></div></div>
   <div id="lkinfo"><span id="lksrc">LOOK</span></div><div id="lkcard"></div>
+  <svg id="lkconn" viewBox="0 0 1000 1000" preserveAspectRatio="none"><line id="lkline" x1="0" y1="0" x2="0" y2="0"/><circle id="lkpa" r="14"/><circle id="lkpb" r="14"/></svg>
+  <div id="lkstep"></div><button id="lkconf" class="box">YES, CONNECTED</button>
+  <div id="lkchips" role="menu" aria-label="camera helpers"><button class="box lkchip" data-op="highlight">HIGHLIGHT</button><button class="box lkchip" data-op="connect">CONNECT</button><button class="box lkchip" data-op="read">READ</button><button class="box lkchip" data-op="count">COUNT</button><button class="box lkchip" data-op="measure">MEASURE</button><button class="box lkchip" data-op="wiring">CHECK WIRING</button></div>
   <div id="lkvig"></div>
+  <div id="lksnap"><img id="lksnapimg" alt="snapshot"><div id="lksnaptxt"></div><div class="lksb"><button id="lksn-big" class="box">ENLARGE</button><button id="lksn-mac" class="box">SEND TO MAC</button><button id="lksn-x" class="box">DISMISS</button></div></div>
+  <button id="lkx" class="box" aria-label="turn the camera off">CLOSE ✕</button>
+  <button id="lktgt" aria-label="camera helpers" aria-expanded="false"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></button>
   <button id="lkdots" aria-label="camera options" aria-expanded="false"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>
   <div id="lkopts"><button id="lk-mac" class="box">SEND TO MAC</button><button id="lk-phone" class="box">SEND TO PHONE</button><button id="lk-hi" class="box">HIGHLIGHT</button><button id="lk-scan" class="box">SCAN</button><button id="lk-zoom" class="box">ZOOM 1×</button><button id="lk-close" class="box">CLOSE ✕</button></div>
   <button id="lkagain" class="box">HIGHLIGHT AGAIN</button>
@@ -157,7 +181,7 @@
       <g class="ic-sweep" id="icsweep"><line x1="0" y1="-126" x2="0" y2="-176"/><circle cy="-176" r="4"/></g>
     </svg>
     <div class="ic-time"><span class="hm"></span><span class="ss"></span><span class="ap"></span></div>
-    <div class="ic-date"></div><div class="ic-wx"></div><div class="ic-next"></div>
+    <div class="ic-date"></div><div class="ic-wx"></div><div class="ic-next"></div><div class="ic-mic" id="icmic"></div>
   </div>
 </div></div>
 <div id="hstat"></div>

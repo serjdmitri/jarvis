@@ -91,6 +91,19 @@ Two themes share everything: **Jarvis** (blue) and **Rose** (red), each with its
 | **Type box** | Alt+Space (or Ctrl+Shift+Space) opens a small text field next to the pointer over any app; Enter sends it |
 | **Tools** | Translate mode with per-language voices, read-this-to-me (screenshot + OCR), unit/currency/time answers, QR codes |
 
+## New: desk assistant, live camera help, memory and phone links
+
+| | |
+|---|---|
+| **Live camera help** | The camera stays live: "what do you see" shows a snapshot card beside it. Highlights follow objects (cheap on-board tracker, no extra install). Helpers in a small tray: Highlight, Connect, Read, Count, Measure, Check wiring. A live "help me connect these" guide draws a line from plug to port. |
+| **Desk features** | "Where did I put the resistors" (from what the camera saw), step-by-step build mode checked on the camera, chip pinouts (it refuses to guess), voice project log, "add this to my shopping list" from the camera, focus mode, a review of phrases it did not understand. |
+| **Memory vault** | Obsidian-style Markdown notes on your Mac (optional helper): remember, search, forget with undo, a memory map. Secrets are never stored; a `Private` folder is never read. |
+| **Maps** | "How long to Starbucks", "show me Tokyo": nearest match with alternatives, car/walk/bike times, flight estimate for long trips, a floating map that flies there. |
+| **Listening** | A follow-up window keeps the mic open after a command (off / 10 / 20 / 30 s) and a clock screensaver that still listens for the wake phrase. |
+| **Phone and Mac links** | "Send that to my phone" sends a one-time download link (home Wi-Fi) and only says "downloaded" when every byte was served. A Connections card tests and fixes each link. |
+| **No keyboard** | Wi-Fi by touch, restart/shut down with confirm, a built-in on-screen keyboard with dictate. See `ROADMAP.md`. |
+| **Music** | Spotify as the main source through a "Jarvis" Spotify Connect player (spotifyd), with a maximum volume. |
+
 ## Screenshots
 
 <p align="center">

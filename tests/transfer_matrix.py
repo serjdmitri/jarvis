@@ -47,3 +47,6 @@ rec("no real secret printed (url has a long random token only)", len(info["url"]
 rec("outbox copy deleted after use", True)
 fileshare._cleanup(); rec("cleanup removes used copies", not any(fileshare.OUT.glob("*")) or all(not f.is_file() or True for f in fileshare.OUT.glob("*")))
 print(f"{sum(R)}/{len(R)} passed")
+import shutil                                                           # the test's own temp folders (one holds a 200 MB over-the-cap file) are removed, so repeated runs never fill /tmp
+for d in (HOME, os.environ["JARVIS_DATA_DIR"], os.environ["XDG_CONFIG_HOME"], str(fileshare.OUT)):
+    shutil.rmtree(d, ignore_errors=True)

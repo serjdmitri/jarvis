@@ -56,6 +56,8 @@ def parse_command(text):
     if m:
         return {"kind": "play", "query": m.group(1).strip()}
     m = re.fullmatch(r"(?:please )?(?:play|put on|start) (?:me )?(.{2,70}?)(?: on youtube(?: music)?)?", low)           # "play Taylor Swift", "play a song", "play something"
+    if m and re.match(r"(?:please )?(?:put on|start)\b", low) and not re.search(r"\b(?:music|song|songs|track|tracks|album|playlist|radio|tunes?|mix|jazz|rock|pop|classical|hip hop|rap|blues|country|lofi|lo-fi)\b", low):
+        m = None                                                          # "start a timer", "put on my coat", "start the car" are not music (only "play X" takes any name)
     if m:
         what = m.group(1).strip()
         if re.fullmatch(r"(?:some music|music|the music|something|a song|any song|a random song|something good|my music|songs)", what):

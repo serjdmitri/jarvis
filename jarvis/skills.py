@@ -321,6 +321,24 @@ def maps_command(text):
         return {"speech": f"I only have a rough guess from your internet address: {me['label']}. Is that where you are? Say yes, or tell me where you are.", "expect": "confirmip", "retry": text}
     if kind == "map_ask":
         return {"speech": "Which place should I show?", "expect": "map"}
+    if kind == "ask_dest":
+        return {"speech": "Directions to where?", "expect": "directions"}
+    if kind == "mode":                                                   # "walk" / "bike" / "car" while a route map is on screen
+        from . import opener
+        spec = maps.SPECS.get(maps.LAST_SPEC["id"])
+        rt = (spec or {}).get("routes", {}).get(r["mode"]) if spec else None
+        if not spec or not rt:
+            return None
+        spec["mode"] = r["mode"]
+        opener.NOTIFY({"t": "mapmode", "id": spec["id"], "mode": r["mode"]})
+        way = {"car": "by car", "foot": "on foot", "bike": "by bike"}[r["mode"]]
+        return {"speech": f"{maps.fmt_dur(rt['dur_s'])} {way}, {maps.fmt_dist(rt['dist_m'])}." + (" Rough estimate." if rt.get("approx") else "")}
+    if kind == "place_view":
+        spec, speech = maps.place_view_spec(r["place"])
+        if not spec:
+            return None                                                  # not a place after all ("show me the way you work"): the other skills and the brain get it
+        maps.LAST["q"] = r["place"]
+        return {"speech": speech, "open": {"action": "show_map", "id": spec["id"]}}
     if kind == "directions":
         maps.LAST["q"] = r["dest"]
         spec, speech = maps.directions_spec(r["dest"], r["mode"])
@@ -472,6 +490,9 @@ def spotify_command(text):
     if spotify.parse_command(text):
         return {"speech": "Here are the steps to set up Spotify.", "spotify": "setup"}
     if not spotify.connected() or settings.get("spotify_premium") is False:
+        c0 = spotify_cli.parse(text)
+        if c0 and c0["op"] == "liked":                         # never sent to a YouTube search: say what is missing
+            return {"speech": "Spotify isn't connected yet. Say set up Spotify and I'll walk you through it."}
         return None
     import time as _t
     cmd = spotify_cli.parse(text)
@@ -617,6 +638,21 @@ def sendfile_command(text):
     return None
 
 
+def office_command(text):
+    from . import diskuse, office
+    o = office.parse_command(text)
+    if o:
+        return {"speech": "", "office": o}
+    d = diskuse.parse_command(text)
+    if d:
+        return {"speech": "", "disk": d}
+    low = re.sub(r"\s+", " ", text.lower().strip(" .?!"))
+    m = re.fullmatch(r"(?:please )?(?:open|show|view)(?: me)? (?:that|the last|this) (picture|photo|image|screenshot|pdf|document|file)", low)
+    if m:
+        return {"speech": "", "viewfile": "pdf" if m.group(1) in ("pdf", "document") else "image"}
+    return None
+
+
 def phonebrief_command(text):
     from . import notifier
     r = notifier.parse_command(text)
@@ -681,6 +717,24 @@ def textmsg_command(text):
     from . import textmsg
     r = textmsg.parse_command(text)
     return {"speech": "", "textmsg": r} if r else None
+
+
+def parts3d_command(text):
+    from . import parts3d, printable
+    r = parts3d.parse_command(text)
+    if r:
+        return {"speech": "", "parts3d": r}
+    r = printable.parse_command(text)
+    return {"speech": "", "printable": r} if r else None
+
+
+def scan3d_command(text):
+    low = re.sub(r"\s+", " ", text.lower().strip(" .?!"))
+    if re.fullmatch(r"(?:please )?(?:scan this|i want to scan (?:this|something)|3d scan(?: this)?|make a 3d scan)", low):
+        return {"speech": "On your iPhone open Scaniverse or 3D Scanner App and scan the object: the phone shows what it captured as you go. Then tap Share, Send to Jarvis, and I will check it for holes.", "helper": "scan"}
+    if re.fullmatch(r"(?:please )?(?:test|check) (?:the )?(?:3d )?generators?|(?:please )?(?:mac )?helper status", low):
+        return {"speech": "", "helper": "test"}
+    return None
 
 
 def whisper_command(text):
@@ -754,6 +808,150 @@ def translate_command(text):
 def read_command(text):
     from . import readscreen
     return readscreen.parse_command(text)
+
+
+def vault_command(text):
+    """The memory vault on the Mac (Obsidian-style notes): remember / forget with undo / show a note / the memory map / where did I leave off."""
+    import json as _json
+    from . import vault, memory
+    t = text.strip()
+    low = t.lower().strip(" .?!")
+    m = re.match(r"(?:please )?(?:remember|note|keep in mind) (?:that )?(.+)$", t, re.I)
+    if m and not re.match(r"(?:please )?remember to\b", low) and not re.search(r"\b(alarm|timer|reminder)\b", low) and not re.match(r"(?:please )?note (?:down )?(?:to|a |an )\b", low):
+        r = vault.remember(m.group(1))
+        out = {"speech": r["speech"]}
+        if r.get("needs_confirm"):
+            out["expect"] = "vault_ok"; out["retry"] = _json.dumps({"text": m.group(1)})
+        return out
+    if re.fullmatch(r"(?:please )?(?:bring (?:it|that|the note) back|undo (?:that|the forget|forgetting)|restore (?:it|that|the note))", low):
+        return {"speech": vault.undo()}
+    m = re.fullmatch(r"(?:please )?forget (?:the )?(?:note |what you know )?(?:about |on )(.+)", low)
+    if m:
+        sp = vault.forget(m.group(1))
+        return {"speech": sp}
+    if re.fullmatch(r"(?:please )?forget (?:that|the last (?:thing|one|fact))", low):
+        facts = memory.all_facts()
+        topic = facts[-1]["text"] if facts else ""
+        local = memory.forget_last()
+        sp = vault.forget(topic) if topic else ""
+        return {"speech": (local + " " + (sp if "moved the note" in sp else "")).strip()}
+    m = re.fullmatch(r"(?:please )?(?:show|open|read|pull up|find)(?: me)?(?: the| my)? (?:note|notes|memory|page) (?:about|on|for) (.+)", low)
+    if m:
+        s = vault.search(m.group(1), 3)
+        if not s["hits"]:
+            return {"speech": f"I have no note about {m.group(1)}."}
+        h = s["hits"][0]
+        n = vault.read(h["path"])
+        body = (n.get("text") or h.get("snippet") or "")
+        body = re.sub(r"^---.*?---\s*", "", body, flags=re.S)
+        return {"speech": f"From your notes: {h['title']}. " + re.sub(r"\s+", " ", body.replace("#", ""))[:200], "cards": [{"type": "text", "title": h["title"], "text": body[:1500]}]}
+    m = re.fullmatch(r"(?:please )?(?:show|open|pull up)(?: me)? (?:my |the )?(?:memory|brain|notes) (?:map|graph)|(?:please )?how does (?:the |my )?(.+?) (?:project )?connect(?: to everything)?|(?:please )?show (?:me )?(?:how )?(?:my )?(?:memory|brain) (?:connects|is connected)", low)
+    if m:
+        focus = m.group(1) if m.lastindex else None
+        g, err = vault.graph(focus)
+        if not g:
+            return {"speech": err}
+        n = len(g["nodes"])
+        return {"speech": f"Here is your memory map: {n} note{'s' if n != 1 else ''}" + (f" around {focus}" if focus else "") + ".", "cards": [{"type": "memmap", "title": "MEMORY MAP", "nodes": g["nodes"], "edges": g["edges"], "total": g["total"], "full": True}]}
+    m = re.fullmatch(r"(?:please )?where did i (?:leave off|stop|get to)(?: (?:on|with))? (?:the |my )?(.+)", low)
+    if m:
+        s = vault.search(m.group(1), 3)
+        if not s["hits"] and m.group(1).endswith(" project"):
+            s = vault.search(m.group(1)[:-8], 3)
+        proj = [h for h in s["hits"] if str(h.get("path", "")).startswith("Projects")] or s["hits"]
+        if not proj:
+            return {"speech": f"I have no notes about {m.group(1)} yet."}
+        n = vault.read(proj[0]["path"])
+        lines = [l.strip("- ").strip() for l in (n.get("text") or "").splitlines() if l.strip().startswith("-")][-3:]
+        daily = [h for h in s["hits"] if str(h.get("path", "")).startswith("Daily")]
+        extra = (" In your daily log: " + daily[0].get("snippet", "")[:120]) if daily else ""
+        return {"speech": f"From your notes on {proj[0]['title']}: " + ("; ".join(l[:90] for l in lines) if lines else re.sub(r"\s+", " ", (n.get("text") or proj[0].get("snippet", "")).replace("#", ""))[:180]) + "." + extra}
+    return None
+
+
+def desk_features_command(text):
+    """Desk memory, build mode, pinouts, project log, shopping from the camera, focus mode, review of unknown phrases."""
+    from . import deskfeatures as D
+    r = D.parse_command(text)
+    if not r:
+        return None
+    k = r["kind"]
+    if k == "where":
+        w = D.where_is(r["name"])
+        if not w and not re.match(r"(?:please )?(?:where did i|have you seen|did you see)", text.lower().strip()):
+            return None                                                      # "where is the Eiffel Tower" is a map question
+        if not w:
+            return {"speech": f"I haven't seen {r['name']} on the camera yet. Open the camera and say what do you see."}
+        return {"speech": f"I last saw the {w['name']} {w['when']}, in the {w['where'].replace('-', ' ')} of the picture."}
+    if k == "build_start":
+        from . import parts3d
+        steps = D.steps_for_led() if "led" in r["name"].lower() else None
+        if not steps:
+            return {"speech": f"I only have a verified build for an LED so far. Say: start build mode for the LED."}
+        return {"speech": D.build_start(r["name"], steps)}
+    if k in ("build_next", "build_say"):
+        return {"speech": D.build_next() if k == "build_next" else D.build_say()}
+    if k == "build_stop":
+        D.BUILD.update(name="", steps=[], i=0)
+        return {"speech": "Build mode ended."}
+    if k == "log":
+        return {"speech": D.log_add(r["text"])["speech"].replace("Got it, I'll remember that.", "Logged.")}
+    if k == "log_show":
+        import time as _t
+        from . import vault
+        s = vault.search(_t.strftime("%Y-%m-%d"), 1)
+        hit = next((h for h in s["hits"] if str(h.get("path", "")).startswith("Daily")), None)
+        if not hit:
+            return {"speech": "Nothing in today's log yet."}
+        n = vault.read(hit["path"])
+        body = re.sub(r"^---.*?---\s*", "", n.get("text", ""), flags=re.S)
+        return {"speech": "Here is today's log.", "cards": [{"type": "text", "title": "Today's log", "text": body[:1500]}]}
+    if k == "focus":
+        return {"speech": D.focus(r["on"])}
+    if k == "review":
+        card, say = D.review()
+        return {"speech": say, **({"cards": [card]} if card else {})}
+    if k == "pinout":
+        p = D.sheet_get(r["part"])
+        if p:
+            return {"speech": f"Pinout of {r['part']}, from my saved copy. Check the real datasheet before wiring.", "cards": [{"type": "list", "title": "PINOUT: " + r["part"].upper(), "items": p["pins"]}]}
+        return {"speech": "", "deskfeature": r}
+    return {"speech": "", "deskfeature": r}                                  # camera ones: build_check, pinout_look, shop_look run in the assistant
+
+
+def system_command(text):
+    """Restart Jarvis / the Go, shut down, screen, brightness. Restart and shut down ask for a yes first (never run on the first sentence)."""
+    import json as _json
+    from . import sysctl
+    r = sysctl.parse_command(text)
+    if not r:
+        return None
+    if r["confirm"]:
+        return {"speech": sysctl.CONFIRM[r["op"]] + " Say yes to confirm.", "expect": "sys_confirm", "retry": _json.dumps({"op": r["op"]})}
+    ok, say = sysctl.run(r["op"], r.get("arg"), True)
+    return {"speech": say}
+
+
+def connections_command(text):
+    low = text.lower().strip(" .?!")
+    if re.fullmatch(r"(?:please )?(?:check|test|show) (?:my |the )?(?:connections?|links?)|(?:are |is )?(?:everything|all)(?: my)? (?:connected|linked|working)|how are my connections", low):
+        from . import connections
+        rows = connections.snapshot(quick=False)
+        return {"speech": connections.summary(rows), "cards": [connections.card(rows)]}
+    return None
+
+
+def unknown_command(text):
+    low = text.lower().strip(" .?!")
+    if re.fullmatch(r"(?:please )?what (?:still )?(?:works|can you do|can i do) (?:offline|without (?:the )?internet|with no internet)", low):
+        from . import offline
+        return {"speech": "With no internet I can still do " + offline.CAPS + ", and the maps you already opened. Anything that needs the internet, I will tell you plainly: no internet."}
+    if re.fullmatch(r"(?:please )?(?:show|list) (?:me )?(?:the )?(?:phrases )?(?:you )?(?:did not|didn't|couldn't|could not) (?:understand|get)|what (?:couldn't|could not|didn't|did not) you understand|what can you do", low):
+        from . import unknown
+        if low == "what can you do":
+            return {"speech": unknown.CAN_DO}
+        return {"speech": "Here are the last phrases I did not understand.", "cards": [unknown.card()]}
+    return None
 
 
 def memory_command(text):
@@ -953,6 +1151,19 @@ def ui_command(text):
 
 
 # ----------------------------------------------------------------------------- entry point
+def chain(persona):
+    """The local skills in the order they are tried (the router test walks the same list)."""
+    return (safety_command, scan3d_command, parts3d_command, textmsg_command, scancode_command, ui_command, persona_command, daylog_command, settingsio_command, projects_command, learn_command, office_command, phonebrief_command, sendfile_command, presence_command, claudestat_command, phone_find_command, btspeaker_command, whisper_command, widget_command, news_command, markets_command, holo_command, orb_command, buddy_command, lambda t: prefs_command(t, persona), meta_command, desk_command, calmail_command, mic_command, send_command, visual_command, phonecam_command, spotify_command, sound_command, idle_command, quiet_command, qr_command, instant_command, alerts_command, music_command, scene_command, translate_command, read_command, health_command, desk_features_command, system_command, connections_command, unknown_command, vault_command, memory_command, maps_command, extras_command, dictate_command, research_command, video_command, window_command, open_command, mac_command, volume_command, timer_command, set_home, lambda t: weather(t, persona))
+
+
+LAST = {"name": None}
+
+
+def take_name():
+    n, LAST["name"] = LAST["name"], None
+    return n
+
+
 def handle(text, persona="jarvis"):
     """-> {"speech": str, "cards": [...]} when answered locally, else None."""
     if not text:
@@ -960,13 +1171,19 @@ def handle(text, persona="jarvis"):
     _CUR["p"] = persona
     if persona != "jarvis" and re.fullmatch(r"(?:please )?(?:go )?back to jarvis|(?:please )?(?:be )?jarvis again", text.lower().strip(" .?!")):
         return {"speech": "", "persona": "jarvis"}               # as another persona, "go back to Jarvis" means the persona (as Jarvis it still means the window)
-    for fn in (safety_command, textmsg_command, scancode_command, ui_command, persona_command, daylog_command, settingsio_command, projects_command, learn_command, phonebrief_command, sendfile_command, presence_command, claudestat_command, phone_find_command, btspeaker_command, whisper_command, widget_command, news_command, markets_command, holo_command, orb_command, buddy_command, lambda t: prefs_command(t, persona), meta_command, desk_command, calmail_command, mic_command, send_command, visual_command, phonecam_command, spotify_command, sound_command, idle_command, quiet_command, qr_command, instant_command, alerts_command, music_command, scene_command, translate_command, read_command, health_command, memory_command, maps_command, extras_command, dictate_command, research_command, video_command, window_command, open_command, mac_command, volume_command, timer_command, set_home, lambda t: weather(t, persona)):
+    if re.fullmatch(r"(?:(?:hey|ok|okay) )?(?:(?:jarvis|rose)[, ]*)?(?:please )?(?:wake up|wake)(?: please)?|(?:are )?you (?:there|awake|up)", re.sub(r"\s+(?:jarvis|rose)$", "", text.lower().strip(" .?!,"))):
+        LAST["name"] = "wakeup"
+        from . import personas as _p
+        import random as _r
+        return {"speech": _r.choice(_p.PERSONAS.get(persona, _p.PERSONAS["jarvis"])["awake"])}         # "hey Jarvis wake up": answered, never sent to the brain
+    for fn in chain(persona):
         try:
             r = fn(text)
         except Exception as e:                        # network down etc: fall through to the brain
             print("skill failed:", fn, e)
             r = None
         if r:
+            LAST["name"] = getattr(fn, "__name__", "skill")
             if r.get("persona"):
                 from . import autopersona
                 autopersona.named_by_user()                        # you chose a persona yourself: no automatic switching for a while
@@ -974,10 +1191,12 @@ def handle(text, persona="jarvis"):
     try:
         td = time_date(text)
         if td:
+            LAST["name"] = "time_date"
             return {"speech": td}
     except Exception as e:
         print("time skill failed:", e)
     v = maths(text)
     if v is not None:
+        LAST["name"] = "maths"
         return {"speech": f"That's {_say_num(v)}."}
     return None

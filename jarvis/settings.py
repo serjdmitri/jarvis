@@ -50,7 +50,7 @@ def update(**kw):
             cur = {}
         cur.update(kw)
         tmp = str(PATH) + ".tmp"
-        with open(tmp, "w") as f:
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:      # mode 600: it holds the home area and LAN addresses
             json.dump(cur, f, indent=2)
         os.replace(tmp, PATH)
         _cache = cur

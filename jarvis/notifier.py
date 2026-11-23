@@ -88,12 +88,14 @@ def send_due(now=None):
     """Called every 10 s by the assistant."""
     for slot in due_briefings(now):
         _sent[slot] = time.strftime("%Y-%m-%d", time.localtime(now or time.time()))
-        send("briefing", f"Good {slot}", compose(slot), now=now)
+        r = send("briefing", f"Good {slot}", compose(slot), now=now)
+        if isinstance(r, dict) and r.get("message") == "quiet hours":
+            _sent.pop(slot, None)                                      # held back by quiet hours: try again while its 30-minute window is open, not lost for the day
 
 
 def parse_command(text):
     low = re.sub(r"\s+", " ", text.lower().strip(" .?!"))
-    m = re.fullmatch(r"(?:please )?(?:send me|give me|text me|set up|set) (?:an? |the |my )?(morning|afternoon|night|evening) (?:briefing|summary)(?: (?:on|to) (?:my )?phone)?(?: at (\d{1,2})(?::(\d{2}))? ?(am|pm)?)?", low)
+    m = re.fullmatch(r"(?:please )?(?:send me|text me|set up|set|schedule) (?:an? |the |my )?(morning|afternoon|night|evening) (?:briefing|summary)(?: (?:on|to) (?:my )?phone)?(?: at (\d{1,2})(?::(\d{2}))? ?(am|pm)?)?", low)
     if m:
         slot = "night" if m.group(1) == "evening" else m.group(1)
         h = int(m.group(2)) if m.group(2) else {"morning": 8, "afternoon": 13, "night": 21}[slot]

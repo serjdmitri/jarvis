@@ -41,3 +41,23 @@ CARDS_PROMPT = (
     "{\"mac\":{\"url\":\"https://...\"}} for a link (always prefer the link for a web video, article or map), or {\"mac\":{\"file\":\"<a file you were given, such as a saved screenshot or note>\"}}. "
     "Never put commands or shell text anywhere."
 )
+
+
+def harden():
+    """Private by default: the folders Jarvis keeps personal things in (facts about you, sent files, camera frames, notes, logs) are readable by you only (700 / 600), and every file the server creates from
+    now on is 600 (umask 077). Called once at start. Never raises."""
+    try:
+        os.umask(0o077)
+        for d in (DATA, SHOTS_DIR, ROOT / "outbox", ROOT / "exports", ROOT / "notes", ROOT / "run", ROOT / "logs", ROOT / "cache"):
+            if not d.is_dir():
+                continue
+            os.chmod(d, 0o700)
+            if d.name in ("cache", "run"):                                  # big, disposable, no personal text: the folder is closed, the files inside need not be touched one by one
+                continue
+            for p in d.rglob("*"):
+                try:
+                    os.chmod(p, 0o700 if p.is_dir() else 0o600)
+                except OSError:
+                    pass
+    except OSError:
+        pass

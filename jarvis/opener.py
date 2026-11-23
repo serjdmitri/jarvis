@@ -898,6 +898,9 @@ def execute(action, timing=None):
     if kind == "show_map":                                 # the Jarvis map page (Leaflet, route lines, places) inside the frame
         from . import maps
         spec = maps.SPECS.get(action["id"])
+        if spec and not kiosk and os.environ.get("JARVIS_NO_DESKTOP"):                    # the throwaway test server has no kiosk: the page still gets the map (no window is moved)
+            NOTIFY({"t": "embed", "kind": "iframe", "src": "/map?id=" + spec["id"], "title": spec.get("title", "map")})
+            return {"ok": True, "message": "map shown"}
         if not spec or not kiosk:
             return {"ok": False, "message": "no map to show"}
         clear_embed(keep_pages=True)

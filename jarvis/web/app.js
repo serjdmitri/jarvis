@@ -369,7 +369,7 @@ function placeCard(el, i) { const [x, y] = slotPos(i, el); el.style.left = x + '
 function expandCard(c) {                                                             // card goes full screen; the orb shrinks to the bottom-right corner (derived from state)
   cards.forEach(o => o !== c && o.isFull && collapseCard(o));
   c.isFull = true; c.el.classList.add('full'); c.el.style.transform = ''; if (c.ex) c.ex.setAttribute('aria-label', 'back to a small panel'); updatePager();
-  setTimeout(() => { c.map && c.map.invalidateSize(); c.redraw && c.redraw(); }, 60);
+  setTimeout(() => { c.map && c.map.invalidateSize(); c.redraw && c.redraw(); }, c.el.classList.contains('anim') ? 300 : 60);          // the map/chart re-measures AFTER the card has finished opening, never during it
 }
 function collapseCard(c) {
   c.isFull = false; c.el.classList.remove('full'); c.el.style.transform = ''; if (c.ex) c.ex.setAttribute('aria-label', 'full screen'); updatePager();
@@ -381,7 +381,7 @@ function updatePager() {
   cards.forEach(c => { const on = c.isFull && live.length > 1; c.pg.classList.toggle('on', on); if (on) c.pg.querySelector('i').textContent = (idx + 1) + '/' + live.length; });
 }
 function flip(c, d) { const live = batch.filter(x => cards.includes(x)), i = live.indexOf(c); if (i < 0) return; expandCard(live[(i + d + live.length) % live.length]); }
-function closeCard(c) { sfx('close'); if (c.live) c.live.src = ''; if (c.onClose) { try { c.onClose(); } catch (_) {} } c.isFull = false; c.el.classList.remove('in'); c.el.classList.add('out'); setTimeout(() => { c.el.remove(); c.map && c.map.remove(); }, 380); const i = cards.indexOf(c); if (i >= 0) cards.splice(i, 1); }
+function closeCard(c) { sfx('close'); if (c.live) c.live.src = ''; if (c.onClose) { try { c.onClose(); } catch (_) {} } c.isFull = false; c.el.classList.remove('in'); c.el.classList.add('out', 'anim'); setTimeout(() => { c.el.remove(); c.map && c.map.remove(); }, 380); const i = cards.indexOf(c); if (i >= 0) cards.splice(i, 1); }
 function clearView() { [...cards].forEach(closeCard); hideView(); updatePager(); }
 function tidy() { cards.forEach((c, i) => { c.moved = false; placeCard(c.el, i); }); }
 
@@ -453,6 +453,9 @@ function showPrefs() {
   $('#s-autoprom').textContent = 'AUTO-SAVE · ' + (PREFS.auto_promises ? 'ON' : 'OFF');
   $('#s-tbox').textContent = { alt: 'ALT+SPACE', ctrl: 'CTRL+SHIFT+SPACE', both: 'BOTH SHORTCUTS', off: 'OFF' }[PREFS.typebox_key || 'alt'];
   $('#s-bootanim').textContent = 'START-UP ANIMATION · ' + (PREFS.boot_anim === false ? 'OFF' : 'ON');
+  $('#s-osk').textContent = 'ON-SCREEN KEYBOARD · ' + (PREFS.osk === false ? 'OFF' : 'ON');
+  $('#s-mbrief').textContent = 'MORNING BRIEF · ' + (PREFS.morning_brief_wake ? 'ON' : 'OFF');
+  $('#s-lwin').textContent = 'KEEP LISTENING · ' + (PREFS.listen_window === 0 ? 'OFF' : (PREFS.listen_window == null ? 20 : PREFS.listen_window) + ' S');
   $('#s-patience').textContent = 'PATIENCE · ' + (PREFS.listen_patience || 'fast').toUpperCase();
   $('#s-orbavoid').textContent = (PREFS.orb_avoid || 'top-right').toUpperCase().replace('NONE', 'NO CORNER');
   $('#s-keepph').textContent = 'KEEP PHOTOS · ' + (PREFS.keep_phone_photos ? 'ON' : 'OFF');
@@ -466,6 +469,72 @@ function showPrefs() {
   $('#s-c24').textContent = PREFS.clock24 ? '24 HOUR' : '12 HOUR'; $('#s-csec').textContent = 'SECONDS · ' + (PREFS.clock_seconds ? 'ON' : 'OFF');
   $('#s-lochint').textContent = PREFS.home ? 'Home: ' + PREFS.home : 'Type your address; it is shown on a map to confirm.';
   if (typeof clockPrefsChanged === 'function') clockPrefsChanged();
+}
+/* Settings > Connections: one line per link, green / amber / red in plain words, the last success, TEST and FIX */
+/* Wi-Fi by touch (scan, pick, type the password on the on-screen keyboard) and the system buttons (restart / shut down ask first) */
+let WF = { ssid: null };
+async function wifiLoad(rescan) {
+  $('#wf-state').textContent = rescan ? 'Scanning…' : 'Reading the list…';
+  try { const j = await (await fetch('/api/wifi' + (rescan ? '?rescan=1' : ''))).json(); const box = $('#wf-list'); box.textContent = '';
+    if (!j.ok) { $('#wf-state').textContent = j.why || 'No Wi-Fi list.'; return; }
+    $('#wf-state').textContent = j.connected ? 'Connected to ' + j.connected + '.' : 'Not connected. Pick a network.';
+    j.rows.slice(0, 12).forEach(r => { const d = document.createElement('div'); d.className = 'crow ' + (r.connected ? 'green' : 'amber'); const dot = document.createElement('i'); const tx = document.createElement('div'); tx.className = 'ctx'; const b = document.createElement('b'); b.textContent = r.ssid; const s = document.createElement('small'); s.textContent = (r.connected ? 'connected · ' : r.known ? 'saved · ' : '') + 'signal ' + r.signal + '%' + (r.secured ? ' · password' : ' · open'); tx.append(b, s);
+      const bt = document.createElement('div'); bt.className = 'cbtns'; if (!r.connected) { const x = document.createElement('button'); x.className = 'box'; x.textContent = 'CONNECT'; x.onclick = () => wifiPick(r); bt.append(x); } d.append(dot, tx, bt); box.append(d); });
+  } catch (_) { $('#wf-state').textContent = 'Could not read the Wi-Fi list.'; }
+}
+function wifiPick(r) { WF.ssid = r.ssid; if (r.secured && !r.known) { $('#wf-pw').hidden = false; $('#wf-pwl').textContent = 'Password for ' + r.ssid; $('#wf-pwi').value = ''; $('#wf-pwi').focus(); } else wifiGo(); }
+async function wifiGo() { const pw = $('#wf-pwi').value; $('#wf-state').textContent = 'Connecting to ' + WF.ssid + '…'; $('#wf-go').disabled = true;
+  try { const j = await (await fetch('/api/wifi/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ssid: WF.ssid, password: pw || null }) })).json(); $('#wf-state').textContent = j.message; if (j.ok) { $('#wf-pw').hidden = true; $('#wf-pwi').value = ''; setTimeout(() => wifiLoad(false), 1500); } } catch (_) { $('#wf-state').textContent = 'The connection did not answer.'; }
+  $('#wf-go').disabled = false; }
+$('#wf-scan').onclick = () => wifiLoad(true); $('#wf-go').onclick = wifiGo;
+let sysPending = null, sysT = 0;
+document.querySelectorAll('[data-sys]').forEach(b => b.onclick = () => { const op = b.dataset.sys, arg = b.dataset.arg;
+  const Q = { restart_jarvis: 'Restart Jarvis?', reboot: 'Restart the Go?', poweroff: 'Shut down the Go?' };
+  if (Q[op]) { sysPending = { op, arg }; $('#sysq').textContent = Q[op]; $('#sysconf').hidden = false; clearTimeout(sysT); sysT = setTimeout(() => { $('#sysconf').hidden = true; sysPending = null; }, 15000); }
+  else send({ t: 'system', op, arg }); });
+$('#sys-yes').onclick = () => { if (sysPending) send({ t: 'system', op: sysPending.op, confirm: true }); sysPending = null; $('#sysconf').hidden = true; clearTimeout(sysT); };
+$('#sys-no').onclick = () => { sysPending = null; $('#sysconf').hidden = true; clearTimeout(sysT); };
+/* The on-screen keyboard: large keys, opens only when a text box is touched (never by itself), a hold-to-dictate button (the words are typed into the box), hides when you tap away. */
+const OSK = { el: null, shift: false, sym: false, touchT: 0, field: null };
+const ROWS = [['q','w','e','r','t','y','u','i','o','p'], ['a','s','d','f','g','h','j','k','l'], ['⇧','z','x','c','v','b','n','m','⌫'], ['123',',','SPACE','.','↵']];
+const SYMS = [['1','2','3','4','5','6','7','8','9','0'], ['-','/',':',';','(',')','$','&','@','"'], ['#+=','.',',','?','!',"'",'⌫'], ['ABC','SPACE','↵']];
+function oskDraw() { const el = OSK.el; el.textContent = ''; (OSK.sym ? SYMS : ROWS).forEach(r => { const d = document.createElement('div'); d.className = 'ork'; r.forEach(k => { const b = document.createElement('button'); b.className = 'box ok' + (k.length > 1 ? ' wide' : ''); b.textContent = k === 'SPACE' ? '' : (OSK.shift && k.length === 1 ? k.toUpperCase() : k); b.dataset.k = k; if (k === 'SPACE') b.style.flex = '4'; d.append(b); }); el.append(d); });
+  const f = document.createElement('div'); f.className = 'ork'; const dc = document.createElement('button'); dc.className = 'box ok wide'; dc.id = 'osk-dict'; dc.textContent = 'HOLD TO DICTATE'; const hd = document.createElement('button'); hd.className = 'box ok wide'; hd.id = 'osk-hide'; hd.textContent = 'HIDE'; f.append(dc, hd); el.append(f);
+  dc.addEventListener('pointerdown', e => { e.preventDefault(); send({ t: 'dictate', down: true }); dc.classList.add('on'); }); const up = () => { dc.classList.remove('on'); send({ t: 'dictate', down: false }); }; dc.addEventListener('pointerup', up); dc.addEventListener('pointercancel', up);
+  hd.addEventListener('pointerdown', e => { e.preventDefault(); oskHide(); }); }
+function oskType(k) { const f = OSK.field; if (!f) return; if (k === '⌫') { document.execCommand('delete'); return; } if (k === '↵') { f.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); f.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true })); if (f.tagName === 'TEXTAREA') document.execCommand('insertText', false, '\n'); return; }
+  if (k === '⇧') { OSK.shift = !OSK.shift; oskDraw(); return; } if (k === '123') { OSK.sym = true; oskDraw(); return; } if (k === 'ABC' || k === '#+=') { OSK.sym = false; oskDraw(); return; }
+  const ch = k === 'SPACE' ? ' ' : (OSK.shift && k.length === 1 ? k.toUpperCase() : k); document.execCommand('insertText', false, ch); if (OSK.shift) { OSK.shift = false; oskDraw(); } }
+function oskShow(f) { if (PREFS.osk === false) return; if (!OSK.el) { OSK.el = $('#osk'); OSK.el.addEventListener('pointerdown', e => { e.preventDefault(); const b = e.target.closest('button.ok'); if (b && b.dataset.k) oskType(b.dataset.k); }); } OSK.field = f; OSK.shift = false; OSK.sym = false; oskDraw(); OSK.el.hidden = false; document.documentElement.classList.add('oskon'); setTimeout(() => { try { f.scrollIntoView({ block: 'center' }); } catch (_) {} }, 60); }
+function oskHide() { if (OSK.el) OSK.el.hidden = true; document.documentElement.classList.remove('oskon'); OSK.field = null; }
+document.addEventListener('pointerdown', e => { if (e.pointerType === 'touch') OSK.touchT = performance.now(); }, true);
+document.addEventListener('focusin', e => { const f = e.target; if (f && f.matches && f.matches('input:not([type=range]):not([type=checkbox]):not([type=button]), textarea') && performance.now() - OSK.touchT < 1200) oskShow(f); });       // only after a TOUCH on the box
+document.addEventListener('focusout', e => { setTimeout(() => { if (OSK.el && !OSK.el.hidden && !(document.activeElement && document.activeElement.matches && document.activeElement.matches('input, textarea'))) oskHide(); }, 200); });
+$('#s-osk').onclick = () => setPref('osk', PREFS.osk === false); 
+let connPoll = 0;
+async function connLoad() {
+  try { const j = await (await fetch('/api/connections')).json(); const box = $('#conn-rows'); box.textContent = '';
+    j.rows.forEach(r => { const d = document.createElement('div'); d.className = 'crow ' + r.state;
+      const dot = document.createElement('i'); dot.setAttribute('aria-label', r.state === 'green' ? 'working' : r.state === 'amber' ? 'needs a look' : 'down');
+      const tx = document.createElement('div'); tx.className = 'ctx'; const b = document.createElement('b'); b.textContent = r.name; const s = document.createElement('small'); s.textContent = r.text + (r.state === 'green' || r.last_ok === 'never' ? '' : ' · last OK ' + r.last_ok); const l = document.createElement('small'); l.className = 'cl'; l.textContent = 'last success: ' + r.last_ok; tx.append(b, s, l);
+      const bt = document.createElement('div'); bt.className = 'cbtns';
+      [['TEST', 'test', r.test], ['FIX', 'fix', r.fix]].forEach(([lab, op, on]) => { if (!on) return; const x = document.createElement('button'); x.className = 'box'; x.textContent = lab; x.onclick = async () => { x.disabled = true; await fetch('/api/connections/' + r.id + '/' + op, { method: 'POST' }); connPollStart(); }; bt.append(x); });
+      d.append(dot, tx, bt); box.append(d); });
+  } catch (_) { $('#conn-rows').textContent = 'Could not read the connections.'; }
+}
+function connPollStart() { clearInterval(connPoll); let n = 0; connLoad(); connPoll = setInterval(() => { connLoad(); if (++n > 35) clearInterval(connPoll); }, 2000); }
+$('#c-all').onclick = () => { closeSettings(); ask('check my connections'); }; $('#c-pairmac').onclick = () => { closeSettings(); ask('pair my Mac'); };
+async function audioLoad() { try { const j = await (await fetch('/api/audio')).json(); const o = j.outputs.map(x => (x.default ? '● ' : '○ ') + x.name + (x.kind === 'bluetooth' ? ' (Bluetooth)' : '')).join(' · ');
+  $('#s-audiotxt').textContent = j.player.plain + (j.spotify ? ' · Spotify account connected' : ' · Spotify account not connected') + '. Outputs: ' + (o || 'none found') + '. ● = the one in use now; I never change it.'; $('#s-vmax').textContent = 'MAX · ' + j.max + '%'; } catch (_) { $('#s-audiotxt').textContent = 'Could not read the audio state.'; } }
+$('#s-audior').onclick = audioLoad; $('#s-vmax').onclick = () => { const o = [40, 50, 60, 70, 80, 90, 100], c = PREFS.spotify_volume_max || 80; setPref('spotify_volume_max', o[(o.indexOf(c) + 1) % o.length] || 80); setTimeout(audioLoad, 400); };
+$('#s-mbrief').onclick = () => setPref('morning_brief_wake', !PREFS.morning_brief_wake);
+$('#s-lwin').onclick = () => { const o = [0, 10, 20, 30], cur = PREFS.listen_window == null ? 20 : PREFS.listen_window; setPref('listen_window', o[(o.indexOf(cur) + 1) % 4]); };
+let WINDOW_OPEN = false;
+function winRing(m) {                                     // the follow-up window: a thin ring counting down, nothing else on screen changes
+  const r = $('#winring'), fg = r.querySelector('.fg');
+  WINDOW_OPEN = !!(m.on && m.secs);
+  if (!m.on || !m.secs) { r.classList.remove('on'); fg.style.animation = 'none'; return; }
+  fg.style.animation = 'none'; void fg.getBoundingClientRect(); fg.style.animation = `winring ${m.secs}s linear forwards`; r.classList.add('on');
 }
 const setPref = (key, value) => { PREFS[key] = value; showPrefs(); send({ t: 'setting', key, value }); };
 /* sliders: pointer-events on the control itself (the old one sat under a label's invisible touch-extender), a big thumb, − and + buttons, and a send only when you let go */
@@ -652,7 +721,7 @@ function musicBuild(c, body, card) {                                            
   let st = {}; let t0 = performance.now();
   const fmt = x => `${Math.floor(x / 60)}:${String(Math.floor(x % 60)).padStart(2, '0')}`;
   function paint() { const pr = (st.progress || 0) + (st.playing ? (performance.now() - t0) / 1000 : 0), d = st.duration || 0; fill.style.width = d ? Math.min(100, pr / d * 100) + '%' : '0%'; tm.textContent = d ? `${fmt(Math.min(pr, d))} / ${fmt(d)}` : ''; pp.textContent = st.playing ? '⏸' : '▶'; }
-  function set(m) { st = m; t0 = performance.now(); if (m.image && art.getAttribute('src') !== m.image) art.src = m.image; nm.textContent = m.name || 'Nothing playing'; ar.textContent = m.artist || ''; dv.textContent = (m.device ? 'on ' + m.device : '') + (m.volume != null ? '  ·  volume ' + m.volume + '%' : ''); paint(); }
+  function set(m) { st = m; t0 = performance.now(); if (m.image && art.getAttribute('src') !== m.image) art.src = m.image; nm.textContent = m.name || 'Nothing playing'; ar.textContent = m.artist || ''; dv.textContent = (m.device ? 'on ' + m.device : '') + (m.volume != null ? '  ·  volume ' + m.volume + '%' : '') + (m.conn ? (m.device || m.volume != null ? '  ·  ' : '') + m.conn : ''); paint(); }
   set(card); body.append(art, meta, bar, tm, row);
   const iv = setInterval(paint, 1000), poll = setInterval(() => send({ t: 'action', name: 'spotify_status', payload: {} }), 5000);       // polls only while the card is open
   MUSIC.set = set; MUSIC.card = c; c.onClose = () => { clearInterval(iv); clearInterval(poll); if (MUSIC.card === c) { MUSIC.set = null; MUSIC.card = null; } };
@@ -692,7 +761,7 @@ function lkLayout() {                                                           
 }
 function lkDraw() {
   const box = $('#lkboxes'); box.textContent = ''; box.classList.toggle('on', LK.boxes.length > 0);
-  LK.boxes.forEach((o, i) => { const d = document.createElement('div'); d.className = 'lkb' + (LK.sel === i ? ' sel' : ''); d.style.cssText = `left:${o.x * 100}%;top:${o.y * 100}%;width:${o.w * 100}%;height:${o.h * 100}%;--d:${(0.25 + i * 0.12).toFixed(2)}s`;
+  LK.boxes.forEach((o, i) => { const d = document.createElement('div'); d.className = 'lkb' + (LK.sel === i ? ' sel' : ''); d.style.cssText = `left:0;top:0;width:${o.w * 100}%;height:${o.h * 100}%;translate:${o.x / o.w * 100}% ${o.y / o.h * 100}%;--d:${(0.25 + i * 0.12).toFixed(2)}s`;
     const sp = document.createElement('span'); sp.textContent = (i + 1) + ' · ' + o.name; d.append(sp); ['tr', 'bl'].forEach(c => { const e = document.createElement('i'); e.className = c; d.append(e); });
     d.onclick = ev => { ev.stopPropagation(); lkSelect(i); }; box.append(d); });
   if (LK.boxes.length) { const sc = $('#lkscan'); sc.classList.remove('go'); void sc.offsetWidth; sc.classList.add('go'); }                       // the quick scan sweep
@@ -706,28 +775,63 @@ function lkPlaceCard() {                                                        
 }
 function lkMode(live) { LK.live = live; $('#lkinfo').classList.toggle('live', live); $('#lksrc').textContent = (live ? 'LIVE · ' : '') + (LK.srcName || 'LOOK').toUpperCase(); }
 function lkStopLive() { clearInterval(LK.poll); LK.poll = 0; }
-function lkStale(on) { $('#lkboxes').classList.toggle('stale', on); $('#lkagain').classList.toggle('on', on); clearTimeout(LK.staleT); if (!on && LK.boxes.length) LK.staleT = setTimeout(() => lkStale(true), 9000); }      // boxes belong to the frame they were found on: after a few seconds they fade and offer HIGHLIGHT AGAIN
+function lkStale(on) { $('#lkboxes').classList.toggle('stale', on); $('#lkagain').classList.toggle('on', on); clearTimeout(LK.staleT); if (!on && LK.boxes.length && !LK.tracking) LK.staleT = setTimeout(() => lkStale(true), 9000); }      // boxes belong to the frame they were found on: after a few seconds they fade and offer HIGHLIGHT AGAIN
 function lkLive(stream, keep) {
   lkStopLive(); if (!keep) { LK.boxes = []; LK.sel = null; lkDraw(); $('#lkcard').style.display = 'none'; lkStale(false); } lkMode(true);
-  if (stream) $('#lkimg').src = stream;                                             // the phone's own stream, straight from the phone
+  if (stream) { if ($('#lkimg').getAttribute('src') !== stream) $('#lkimg').src = stream; }                                             // the phone's own stream, straight from the phone
   else { const tick = async () => { try { const j = await fetch('/api/look/frame').then(r => r.json()); $('#lkimg').src = j.src; } catch (_) {} }; tick(); LK.poll = setInterval(tick, 2500); }
 }
 function lkOpen(m) {
   LK.open = true; document.documentElement.classList.add('looking'); S.viewing = true; S.viewT = performance.now() + 3600000; LK.srcName = m.source || ''; lkStopLive(); LK.boxes = []; LK.sel = null; $('#lkcard').style.display = 'none';
   $('#lkimg').onload = lkLayout; $('#lkimg').src = m.src; lkMode(false); lkDraw();
 }
-function lkClose() { lkStopLive(); lkStale(false); LK.zoom = 1; $('#lkstage').className = ''; $('#lkopts').classList.remove('on'); $('#lk-zoom').textContent = 'ZOOM 1×'; $('#lkimg').src = ''; LK.open = false; document.documentElement.classList.remove('looking'); S.viewing = false; $('#lkcard').style.display = 'none'; }   // the stream stops, the orb returns
+function lkClose() { LK.tracking = false; lkConnect({ off: true }); lkSnapX(); lkStopLive(); lkStale(false); LK.zoom = 1; $('#lkstage').className = ''; lkTray('', false); $('#lk-zoom').textContent = 'ZOOM 1×'; $('#lkimg').src = ''; LK.open = false; document.documentElement.classList.remove('looking'); S.viewing = false; $('#lkcard').style.display = 'none'; }   // the stream stops, the orb returns
 function lkEvent(m) {
   if (m.op === 'open') lkOpen(m);
-  else if (m.op === 'boxes') { LK.boxes = m.boxes || []; LK.sel = null; $('#lkcard').style.display = 'none'; lkDraw(); lkStale(false); }
+  else if (m.op === 'track') lkTrack(m);
+  else if (m.op === 'connect') lkConnect(m);
+  else if (m.op === 'boxes') { LK.tracking = false; LK.boxes = m.boxes || []; LK.sel = null; $('#lkcard').style.display = 'none'; lkDraw(); lkStale(false); }
   else if (m.op === 'select') { LK.sel = m.i; lkDraw(); if (LK.boxes[m.i]) lkCard(LK.boxes[m.i].name, m.text || 'looking…'); }
   else if (m.op === 'freeze') { lkStopLive(); lkMode(false); }
   else if (m.op === 'live') lkLive(m.stream, m.keep);
   else if (m.op === 'frame') { if ($('#lkimg').getAttribute('src') !== m.src) { $('#lkimg').src = m.src; } LK.srcName = m.source || LK.srcName; lkMode(false); }
+  else if (m.op === 'snapshot') lkSnap(m);
   else if (m.op === 'close') lkClose();
 }
+function lkTrack(m) {                                                              // the boxes follow their objects: only transform and opacity change per frame; size changes only when it really changed
+  if (m.off) toast(m.off.toUpperCase()); const kids = $('#lkboxes').children; if (!m.boxes || !m.boxes.length) { LK.tracking = false; return; }
+  if (!LK.tracking) { LK.tracking = true; clearTimeout(LK.staleT); lkStale(false); }
+  m.boxes.forEach((o, i) => { const d = kids[i], old = LK.boxes[i]; if (!d || !old) return; const nm = old.name.replace(/^LOST /, '');
+    if (Math.abs(o.w - old.w) > 0.02 || Math.abs(o.h - old.h) > 0.02) { d.style.width = o.w * 100 + '%'; d.style.height = o.h * 100 + '%'; }
+    d.style.translate = `${o.x / o.w * 100}% ${o.y / o.h * 100}%`; d.classList.toggle('lost', !!o.lost);
+    const sp = d.firstChild; if (sp) sp.textContent = (o.lost ? 'lost ' : (i + 1) + ' · ') + nm.toLowerCase().replace(/^lost /, ''); LK.boxes[i] = Object.assign({}, old, { x: o.x, y: o.y, w: o.w, h: o.h, lost: o.lost }); });
+}
+function lkConnect(m) {                                                           // the connect guide: a glowing line from the plug end to the port, three colour stages, a short step line
+  const sv = $('#lkconn'), im = $('#lkimg'), st = $('#lkstep'), cf = $('#lkconf');
+  if (m.off) { sv.classList.remove('on'); st.classList.remove('on'); cf.classList.remove('on'); return; }
+  const r = im.getBoundingClientRect(), s0 = $('#lkstage').getBoundingClientRect(), f = LK.zoom || 1; sv.style.left = ((r.left - s0.left) / f) + 'px'; sv.style.top = ((r.top - s0.top) / f) + 'px'; sv.style.width = (r.width / f) + 'px'; sv.style.height = (r.height / f) + 'px';
+  const c = o => [(o.x + o.w / 2) * 1000, (o.y + o.h / 2) * 1000], a = c(m.a), b = c(m.b), ln = $('#lkline');
+  ln.setAttribute('x1', a[0]); ln.setAttribute('y1', a[1]); ln.setAttribute('x2', b[0]); ln.setAttribute('y2', b[1]);
+  $('#lkpa').setAttribute('cx', a[0]); $('#lkpa').setAttribute('cy', a[1]); $('#lkpb').setAttribute('cx', b[0]); $('#lkpb').setAttribute('cy', b[1]);
+  sv.setAttribute('class', 'on ' + m.stage); sv.style.opacity = (m.a.lost || m.b.lost) ? .4 : 1;
+  if (st.textContent !== m.text) st.textContent = m.text; st.classList.add('on'); cf.classList.toggle('on', !!m.confirm); LK.connecting = true;
+}
+$('#lkconf').onclick = () => { send({ t: 'look_op', op: 'connected' }); lkConnect({ off: true }); };
+let lkTrayT = 0;
+function lkTray(which, on) {          // the chips tray (target icon) and the options tray (three dots) open UNDER their buttons, never both, and hide again by themselves
+  const T = { chips: ['#lkchips', '#lktgt'], opts: ['#lkopts', '#lkdots'] };
+  for (const k in T) { const open = on && k === which; $(T[k][0]).classList.toggle('on', open); $(T[k][1]).setAttribute('aria-expanded', open); }
+  clearTimeout(lkTrayT); if (on) lkTrayT = setTimeout(() => lkTray('', false), 7000);
+}
+document.querySelectorAll('#lkchips .lkchip').forEach(b => b.onclick = () => { send({ t: 'look_op', op: b.dataset.op }); lkTray('', false); });
+$('#lktgt').onclick = e => { e.stopPropagation(); lkTray('chips', !$('#lkchips').classList.contains('on')); };
+$('#lkx').onclick = () => { lkTray('', false); lkClose(); send({ t: 'look_op', op: 'close' }); };
+$('#look').addEventListener('pointerdown', e => { if (!e.target.closest('#lkchips, #lktgt, #lkopts, #lkdots')) lkTray('', false); });
+function lkSnap(m) { const c = $('#lksnap'); if (m.src && $('#lksnapimg').getAttribute('src') !== m.src) $('#lksnapimg').src = m.src; $('#lksnaptxt').textContent = m.text || 'looking…'; c.classList.add('on'); }
+function lkSnapX() { const c = $('#lksnap'); c.classList.remove('on', 'big'); $('#lksn-big').textContent = 'ENLARGE'; }
+$('#lksn-x').onclick = lkSnapX; $('#lksn-big').onclick = () => { const b = $('#lksnap').classList.toggle('big'); $('#lksn-big').textContent = b ? 'SHRINK' : 'ENLARGE'; }; $('#lksn-mac').onclick = () => { send({ t: 'look_mac' }); toast('SENDING TO YOUR MAC'); };
 $('#lk-close').onclick = () => { lkClose(); send({ t: 'look_op', op: 'close' }); };
-$('#lkdots').onclick = () => { const o = $('#lkopts'); o.classList.toggle('on'); $('#lkdots').setAttribute('aria-expanded', o.classList.contains('on')); };
+$('#lkdots').onclick = e => { e.stopPropagation(); lkTray('opts', !$('#lkopts').classList.contains('on')); };
 $('#lk-phone').onclick = () => { send({ t: 'look_op', op: 'phone' }); toast('SENDING TO YOUR PHONE'); };
 $('#lk-hi').onclick = () => { send({ t: 'look_op', op: 'highlight' }); $('#lkopts').classList.remove('on'); };
 $('#lk-scan').onclick = () => { send({ t: 'look_op', op: 'scan' }); $('#lkopts').classList.remove('on'); };
@@ -816,6 +920,48 @@ $('#abort').addEventListener('pointerdown', e => e.stopPropagation());
 $('#s-twake').onclick = () => setPref('term_wake', !PREFS.term_wake);
 let cardId = 0;
 const sfx = ev => { if (ws && ws.readyState === 1 && !DOCK) send({ t: 'sfx', ev }); };
+/* the memory map: the vault's [[wikilinks]] as a graph in the Jarvis style. A small spring layout is worked out once (no per-frame physics), then drawn on a canvas: pan, zoom, tap a node to read its summary, new memories glow,
+   colour by folder, size by number of links, at most 300 nodes, 30 fps cap, a plain still picture in lite mode. */
+function memmapBuild(c, body, card) {
+  body.classList.add('media'); const wrap = document.createElement('div'); wrap.className = 'mm'; const cv = document.createElement('canvas'), info = document.createElement('div'); info.className = 'mminfo'; info.textContent = 'TAP A NOTE';
+  const bar = document.createElement('div'); bar.className = 'mmbar'; wrap.append(cv, info, bar); body.append(wrap);
+  const N = (card.nodes || []).slice(0, 300).map((n, i) => Object.assign({}, n, { i, x: Math.cos(i * 2.4) * (20 + i * 3), y: Math.sin(i * 2.4) * (20 + i * 3), vx: 0, vy: 0 })), idx = new Map(N.map(n => [n.id, n]));
+  const E = (card.edges || []).map(e => [idx.get(e[0]), idx.get(e[1])]).filter(e => e[0] && e[1]);
+  const COL = { Memory: '#6fd0ff', Projects: '#ffd166', Daily: '#9d8cff', Inbox: '#8affc1', ghost: '#7d8aa8' }; const col = n => COL[n.folder] || '#c0d0ff';
+  for (let it = 0; it < 220; it++) {                                                                    // spring layout, once
+    for (let a = 0; a < N.length; a++) for (let b = a + 1; b < N.length; b++) { let dx = N[a].x - N[b].x, dy = N[a].y - N[b].y, d2 = dx * dx + dy * dy + 40, f = 900 / d2; N[a].vx += dx * f; N[a].vy += dy * f; N[b].vx -= dx * f; N[b].vy -= dy * f; }
+    E.forEach(([a, b]) => { const dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy) + .01, f = (d - 60) * .02; a.vx += dx / d * f; a.vy += dy / d * f; b.vx -= dx / d * f; b.vy -= dy / d * f; });
+    N.forEach(n => { n.vx -= n.x * .004; n.vy -= n.y * .004; n.x += n.vx * .5; n.y += n.vy * .5; n.vx *= .6; n.vy *= .6; });
+  }
+  const v = { x: 0, y: 0, k: 1 }; let sel = null, raf = 0, last = 0, dirty = true; const ctx = cv.getContext('2d');
+  const fit = () => { const r = cv.getBoundingClientRect(); cv.width = Math.max(200, r.width | 0); cv.height = Math.max(150, r.height | 0); let mx = 1; N.forEach(n => { mx = Math.max(mx, Math.abs(n.x), Math.abs(n.y)); }); v.k = Math.min(cv.width, cv.height) / 2 / (mx + 30); dirty = true; };
+  const sz = n => (6 + Math.min(12, (n.degree || 0) * 2.2)) / Math.max(.6, Math.min(2.2, v.k));          // size by number of links, always a readable size on screen
+  function draw(t) {
+    raf = requestAnimationFrame(draw); if (t - last < 33) return; last = t; if (!c.el.isConnected) { cancelAnimationFrame(raf); return; }
+    const lite = document.documentElement.classList.contains('lite'); if (lite && !dirty) return; dirty = false;
+    ctx.clearRect(0, 0, cv.width, cv.height); ctx.save(); ctx.translate(cv.width / 2 + v.x, cv.height / 2 + v.y); ctx.scale(v.k, v.k);
+    ctx.lineWidth = 1 / v.k; ctx.strokeStyle = 'rgba(130,170,255,.28)'; ctx.beginPath(); E.forEach(([a, b]) => { ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }); ctx.stroke();
+    N.forEach(n => { const r = sz(n), glow = n.new && !lite ? .5 + .5 * Math.sin(t / 400) : 0; ctx.fillStyle = col(n); ctx.globalAlpha = n.folder === 'ghost' ? .5 : 1;
+      if (glow) { ctx.globalAlpha = .25 * glow; ctx.beginPath(); ctx.arc(n.x, n.y, r + 7, 0, 7); ctx.fill(); ctx.globalAlpha = 1; }
+      ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 7); ctx.fill(); if (n === sel) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 / v.k; ctx.stroke(); } });
+    ctx.globalAlpha = 1; ctx.fillStyle = 'rgba(232,240,255,.85)'; ctx.font = (13 / v.k) + 'px "Noto Sans Mono",monospace'; ctx.textAlign = 'center';
+    N.forEach(n => { if ((n.degree || 0) >= 2 || n === sel || v.k > 1.6) ctx.fillText(n.id.slice(0, 22), n.x, n.y - sz(n) - 4 / v.k); }); ctx.restore();
+  }
+  let drag = null; cv.addEventListener('pointerdown', e => { cv.setPointerCapture(e.pointerId); drag = { x: e.clientX, y: e.clientY, vx: v.x, vy: v.y, moved: 0 }; });
+  cv.addEventListener('pointermove', e => { if (!drag) return; drag.moved += Math.abs(e.movementX) + Math.abs(e.movementY); v.x = drag.vx + e.clientX - drag.x; v.y = drag.vy + e.clientY - drag.y; dirty = true; });
+  cv.addEventListener('pointerup', e => { const d = drag; drag = null; if (!d || d.moved > 6) return; const r = cv.getBoundingClientRect(), px = ((e.clientX - r.left) * cv.width / r.width - cv.width / 2 - v.x) / v.k, py = ((e.clientY - r.top) * cv.height / r.height - cv.height / 2 - v.y) / v.k;
+    let best = null, bd = 1e9; N.forEach(n => { const dd = Math.hypot(n.x - px, n.y - py); if (dd < bd) { bd = dd; best = n; } }); sel = best && bd < sz(best) + 14 / v.k ? best : null; info.textContent = sel ? sel.id.toUpperCase() + ' · ' + (sel.folder === 'ghost' ? 'NOT WRITTEN YET' : sel.folder.toUpperCase()) + ' — ' + (sel.summary || '') : 'TAP A NOTE'; dirty = true; });
+  cv.addEventListener('wheel', e => { e.preventDefault(); v.k = Math.max(.2, Math.min(8, v.k * (e.deltaY < 0 ? 1.15 : .87))); dirty = true; }, { passive: false });
+  [['+', 1.3], ['−', .77]].forEach(([l, f]) => { const b = document.createElement('button'); b.textContent = l; b.className = 'box'; b.onclick = () => { v.k = Math.max(.2, Math.min(8, v.k * f)); dirty = true; }; bar.append(b); });
+  const key = document.createElement('span'); key.className = 'mmkey'; key.textContent = 'MEMORY · PROJECTS · DAILY · INBOX · NOT WRITTEN YET'; bar.append(key);
+  card.total > N.length && (info.textContent = 'SHOWING ' + N.length + ' OF ' + card.total + ' NOTES · TAP A NOTE');
+  requestAnimationFrame(() => { fit(); raf = requestAnimationFrame(draw); }); new ResizeObserver(fit).observe(cv);
+}
+function cardReady(el) {
+  const ps = []; el.querySelectorAll('img').forEach(i => { if (!i.complete) ps.push(new Promise(r => { i.addEventListener('load', r, { once: true }); i.addEventListener('error', r, { once: true }); })); else if (i.decode) ps.push(i.decode().catch(() => {})); });
+  el.querySelectorAll('iframe').forEach(f => ps.push(new Promise(r => f.addEventListener('load', r, { once: true }))));
+  return Promise.race([Promise.all(ps), new Promise(r => setTimeout(r, 450))]);                 // never longer than 450 ms: a slow picture does not hold the card back
+}
 function addCard(card) {
   if (card.shot) { showView(card.src); return; }
   sfx('open');
@@ -865,20 +1011,22 @@ function addCard(card) {
   else if (card.type === 'chat') chatBuild(c, body, card);
   else if (card.type === 'explain') explainBuild(c, body, card);
   else if (card.type === 'scene3d') holoBuild(c, body, card);
+  else if (card.type === 'memmap') memmapBuild(c, body, card);
   else if (card.type === 'markets') mktBuild(c, body, card);
   else if (card.type === 'chart') { body.classList.add('media'); const cn = document.createElement('canvas'); body.append(cn); post = c.redraw = () => drawChart(cn, card); }
   else if (card.type === 'map') { body.classList.add('media'); const fr = document.createElement('iframe'); fr.className = 'mapframe'; fr.title = 'map';       // the map page (vector, 2D/3D, me-dot; raster fallback by itself)
     fr.src = '/map?id=' + encodeURIComponent(card.mapid || 'me') + (card.lat != null && card.lon != null ? '&lat=' + card.lat + '&lon=' + card.lon + '&label=' + encodeURIComponent(card.title || '') : ''); body.append(fr); }
   cards.push(c); $('#cards').append(el);
   placeCard(el, cards.length - 1);
-  requestAnimationFrame(() => { el.classList.add('in'); post && post(); });
+  el.classList.add('anim');                                                        // will-change only while it opens; the content (picture, map page, chart) is made ready FIRST, then the card fades and scales in from its centre (transform + opacity only)
+  requestAnimationFrame(() => { post && post(); cardReady(el).then(() => requestAnimationFrame(() => { el.classList.add('in'); setTimeout(() => el.classList.remove('anim'), 320); })); });
   bar.querySelector('.x').onclick = () => closeCard(c);                                     // CLOSE always closes, in one press (it used to shrink a full-screen card to a small panel first)
   bar.querySelector('.ex').onclick = () => c.isFull ? collapseCard(c) : expandCard(c);
   bar.querySelector('.mn').onclick = () => { if (c.isFull) collapseCard(c); else el.classList.toggle('shaded'); };                  // yellow: back to small, or roll the card up to its title bar      // maximise / minimise is its own button with its own icon
   bar.querySelector('.pp').onclick = () => flip(c, -1); bar.querySelector('.pn').onclick = () => flip(c, 1);
   const now = performance.now(); if (now - lastCardT > 2500) batch = []; lastCardT = now; batch.push(c);   // cards of one reply form a batch you can page through
   if (S.ghost) setGhost(false);
-  const MEDIA = ['image', 'gallery', 'map', 'chart', 'weather', 'music', 'explain', 'scene3d', 'markets'].includes(card.type);
+  const MEDIA = ['image', 'gallery', 'map', 'chart', 'weather', 'music', 'explain', 'scene3d', 'markets', 'memmap'].includes(card.type);
   if (card.type === 'report' || card.type === 'text' || card.type === 'list' || card.type === 'memory') { el.classList.add('sidepanel'); }
   if (MEDIA && !card.small && (batch.length === 1 || !cards.some(o => o.isFull))) expandCard(c);                                              // the picture, map or chart gets the screen; text stays a small card (a research report is a side panel with a MORE button)
   else if (!MEDIA && card.full) expandCard(c);
@@ -1007,11 +1155,13 @@ const keepMenu = () => { if ($('#menu').classList.contains('on')) { clearTimeout
 $('#menu').addEventListener('pointerdown', keepMenu); $('#settings').addEventListener('pointerdown', keepMenu);
 $('#menubtn').onclick = () => openMenu(!$('#menu').classList.contains('on'));
 function toggleHist(force) { const o = $('#hist').classList.toggle('open', typeof force === 'boolean' ? force : undefined); return o; }
+$('#s-unk').onclick = () => { closeSettings(); ask("what couldn't you understand"); };
+$('#s-perf').onclick = () => { closeSettings(); send({ t: 'perf' }); };
 $('#s-hist').onclick = () => { closeSettings(); toggleHist(); };       // History lives in Settings > Advanced now
 $('#m-hide').onclick = () => setGhost(true);
 $('#m-theme').onclick = () => setTheme(nextPersona());
 $('#m-clear').onclick = () => { clearView(); openMenu(false); };
-$('#m-set').onclick = () => { $('#menu').classList.remove('on'); $('#settings').classList.add('on'); document.documentElement.classList.add('sopen'); showPrefs(); };
+$('#m-set').onclick = () => { audioLoad(); connLoad(); wifiLoad(false); $('#menu').classList.remove('on'); $('#settings').classList.add('on'); document.documentElement.classList.add('sopen'); showPrefs(); };
 $('#vclose').onclick = hideView;
 const setSilent = on => { S.silent = on; send({ t: 'silent', on }); $('#s-voice').textContent = 'VOICE OUTPUT · ' + (on ? 'OFF' : 'ON'); };
 $('#s-voice').onclick = () => setSilent(!S.silent);
@@ -1121,8 +1271,24 @@ const WINCMD = { smaller: w => { const r = { ...w.rect }; r.w *= .75; r.h *= .75
   ypause: w => { w.paused = true; ytCmd(w, 'pauseVideo'); const b = w.el.querySelector('.wpp'); if (b) b.innerHTML = '&#9654;'; }, yplay: w => { w.paused = false; ytCmd(w, 'playVideo'); const b = w.el.querySelector('.wpp'); if (b) b.innerHTML = '&#10074;&#10074;'; },
   duck: w => ytCmd(w, 'setVolume', [20]), unduck: w => ytCmd(w, 'setVolume', [100]),
   min: w => setState(w, 'mini'), max: w => setState(w, 'max'), restore: w => setState(w, 'normal'), close: w => { closeWin(w); } };
+/* the map opens FLOATING (reference ui-01): no Jarvis window frame, feathered edges fading into the background grid, small floating labels and chips; tap away, the small X or "close the map" closes it */
+let MF = null;
+function mapFloat(m) {
+  if (!MF) { const d = document.createElement('div'); d.id = 'mapfloat'; d.setAttribute('role', 'region'); d.setAttribute('aria-label', 'map'); const f = document.createElement('iframe'); f.title = 'map'; f.setAttribute('allow', 'geolocation'); d.append(f); document.body.append(d); MF = { el: d, fr: f }; }
+  const src = m.src + (m.src.includes('?') ? '&' : '?') + 'float=1'; if (MF.fr.getAttribute('src') !== src) MF.fr.src = src;
+  document.documentElement.classList.add('mapfloat'); requestAnimationFrame(() => MF.el.classList.add('on'));
+}
+function mapFloatClose(report) {
+  if (!MF) return; const d = MF; MF = null; d.el.classList.remove('on'); document.documentElement.classList.remove('mapfloat'); setTimeout(() => { d.fr.src = 'about:blank'; d.el.remove(); }, 260);
+  if (report) send({ t: 'action', name: 'embed_closed', payload: {} });
+}
+addEventListener('message', e => { const m = e.data; if (m && m.t === 'map_close' && MF && e.source === MF.fr.contentWindow) mapFloatClose(true); });
+document.addEventListener('pointerdown', e => { if (MF && MF.el.classList.contains('on') && !e.target.closest('#mapfloat, #cards, #dock, #menubtn, #menu, #settings, #status, #abort')) mapFloatClose(true); }, true);
 function embed(m) {
   const html = document.documentElement, frame = $('#pframe');
+  if (MF && (m.kind === 'close' || (m.kind === 'win' && m.cmd === 'close' && (!m.type || m.type === 'map')))) { mapFloatClose(false); if (!WM.wins.length) { reportCount(); return; } }
+  if (m.kind === 'iframe' && /^\/map\?/.test(m.src || '') && !DOCK) { mapFloat(m); return; }
+  if (MF && m.kind !== 'win' && m.kind !== 'full') mapFloatClose(false);
   if (m.kind === 'close') {                                                       // close the front window (or all of them), or the real-window frame
     if (m.all) [...WM.wins].forEach(closeWin); else if (WM.front) closeWin(WM.front);
     if (!WM.wins.length) { html.classList.remove('eframe', 'efull'); frame.style.display = ''; } reportCount(); return; }
@@ -1157,25 +1323,32 @@ function clockSync() {                                                          
   const d = clockText(), t = d.getSeconds() + d.getMilliseconds() / 1000; $('#idlescr').style.setProperty('--sec', (-t).toFixed(3) + 's');
   const sw = $('#icsweep'), ar = $('#icarc'); [sw, ar].forEach(e => { e.style.animation = 'none'; void e.getBoundingClientRect(); e.style.animation = ''; });
 }
+function micNote() { const e = $('#icmic'); if (e) { e.textContent = muted ? 'MIC MUTED · TAP TO WAKE' : '● MIC LIVE · SAY “HEY JARVIS”'; e.classList.toggle('mu', !!muted); } }
 function clockPrefsChanged() { if (idleOn) clockText(); }
-function burnShift() { const w = $('#icwrap'); w.style.transform = `translate(${Math.round((Math.random() - .5) * 16)}px, ${Math.round((Math.random() - .5) * 16)}px)`; }     // a few pixels every minute: no burn-in
+function burnShift() { const w = $('#icwrap'); w.style.transform = `translate(${Math.round((Math.random() - .5) * 16)}px, ${Math.round((Math.random() - .5) * 16)}px)`; }          // slow drift (CSS transition 50 s): a few pixels every minute, never a jump     // a few pixels every minute: no burn-in
 async function idleLoad() { try { const j = await (await fetch('/api/idle')).json(); const w = j.weather;
   $('.ic-wx').textContent = w ? `${w.temp}${w.unit} · ${w.desc}${w.place ? ' · ' + w.place : ''}` : ''; $('.ic-next').textContent = j.next ? `NEXT: ${String(j.next.label).toUpperCase()} AT ${j.next.at}` : ''; } catch (_) {} }
 function idleShow(on) {
   if (on === idleOn || DOCK) return; idleOn = on; document.documentElement.classList.toggle('idlescr', on); const sc = $('#idlescr');
   clearInterval(idleTick); clearInterval(shiftT); clearInterval(secTimer);
-  if (on) { idleSince = performance.now(); sc.classList.remove('dim'); clockSync(); idleLoad();
+  if (on) { idleSince = performance.now(); sc.classList.remove('dim'); clockSync(); idleLoad(); micNote();
     secTimer = setInterval(() => { const d = new Date(); clockText(); if (d.getSeconds() === 0) { clockSync(); idleLoad(); } }, 1000);        // text once a second; re-sync the animations every minute
-    shiftT = setInterval(burnShift, 60000); idleTick = setInterval(() => { if (performance.now() - idleSince > 600000) sc.classList.add('dim'); }, 30000); }          // dims after 10 minutes
+    shiftT = setInterval(burnShift, 60000); idleTick = setInterval(() => { if (performance.now() - idleSince > 20000) sc.classList.add('dim'); }, 5000); }          // gentle: dims after 20 seconds
   else { lastAct = performance.now(); sc.classList.remove('dim'); $('#icwrap').style.transform = ''; if (window.playBoot) window.playBoot('wake'); }       // waking from the clock plays the start-up animation
 }
-const touchAct = () => { lastAct = performance.now(); if (idleOn) idleShow(false); };            // any touch, key, wake word or sound brings the normal view back at once (nothing restarts)
-['pointerdown', 'pointermove', 'keydown', 'touchstart', 'wheel'].forEach(ev => addEventListener(ev, touchAct, { passive: true }));
+/* What counts as activity: a touch, a click, a key, the wake word, a command, Jarvis speaking. What does NOT: pointer jitter (a touch screen or mouse that twitches), background noise, camera frames, music playing, system messages, the clock itself.
+   (The clock used to start late or never because mouse/touch MOVES, system chat lines, a sound level, a presence frame, any open card and any playing video all counted as activity.) */
+const touchAct = () => { lastAct = performance.now(); if (idleOn) idleShow(false); };            // a touch, key or a wake word brings the normal view back at once (nothing restarts)
+['pointerdown', 'keydown', 'touchstart', 'wheel'].forEach(ev => addEventListener(ev, touchAct, { passive: true }));
+function idleTidy() {                                                              // nobody has touched it for the whole time: close the camera view and the map politely; music keeps playing, cards wait under the clock
+  if (typeof LK !== 'undefined' && LK.open) { lkClose(); send({ t: 'look_op', op: 'close' }); }
+  if (WM.wins.some(w => w.type === 'map')) { embed({ kind: 'close', all: false, type: 'map' }); [...WM.wins].filter(w => w.type === 'map').forEach(closeWin); reportCount(); send({ t: 'action', name: 'embed_closed', payload: {} }); }
+}
 setInterval(() => { const h = document.documentElement.classList;
-  const busy = S.mode !== 'idle' || h.contains('embed') || h.contains('ghost') || S.conv || cards.length || $('#menu').classList.contains('on') || $('#settings').classList.contains('on') || $('#srch').classList.contains('on') || document.querySelector('#pframe.on');   // a video, music, a card, speech or a search is activity
+  const busy = S.mode !== 'idle' || S.conv || WINDOW_OPEN || h.contains('ghost') || $('#menu').classList.contains('on') || $('#settings').classList.contains('on') || $('#srch').classList.contains('on');   // speaking, listening, a follow-up window, hidden-UI mode, the menu, settings or a search
   if (busy) lastAct = performance.now();
-  else if (!idleOn && performance.now() - lastAct > idleAfterMs()) idleShow(true);
-  if (idleOn && idleAfterMs() === Infinity) idleShow(false); }, 2000);
+  else if (!idleOn && performance.now() - lastAct > idleAfterMs()) { idleTidy(); idleShow(true); }
+  if (idleOn && idleAfterMs() === Infinity) idleShow(false); }, 1000);
 if (P.has('idle')) addEventListener('load', () => setTimeout(() => idleShow(true), 400));
 
 /* ---------------------------------------------------------------- heartbeat (the watchdog restarts a page that goes silent) and the health line (hidden until something is wrong) */
@@ -1195,11 +1368,15 @@ $('#cstat').onclick = () => { $('#cstat').hidden = true; $('#cedge').className =
 function showHealth(msg) { const e = $('#hstat'); e.textContent = msg || ''; e.style.display = msg ? 'block' : 'none'; }
 
 /* ---------------------------------------------------------------- websocket */
+let WAKE = null;                                                                   // Screen Wake Lock: the page asks the desktop not to lock or sleep while Jarvis is on screen
+async function wakeLock() { try { if (!DOCK && 'wakeLock' in navigator && !document.hidden && !WAKE) { WAKE = await navigator.wakeLock.request('screen'); WAKE.addEventListener('release', () => { WAKE = null; }); } } catch (_) { WAKE = null; } }
+document.addEventListener('visibilitychange', () => { if (!document.hidden) wakeLock(); }); wakeLock(); setInterval(wakeLock, 60000);
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onopen = () => { if (!DOCK) send({ t: 'persona', v: S.theme, announce: false }); if (!DOCK) send({ t: 'source', v: S.source }); if (S.silent && !DOCK) send({ t: 'silent', on: true }); };
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
+    if (m.t === 'hello' && m.build) { if (window.__build && window.__build !== m.build) { location.reload(); return; } window.__build = m.build; }       // the files changed on the server (an update): load the new page by itself
     if (m.t === 'heard') { if (PREFS.show_heard !== false) { const e = $('#heard'); e.textContent = 'heard: ' + m.text + (m.route ? '   →   ' + m.route : ''); e.style.display = 'block'; clearTimeout(e._t); e._t = setTimeout(() => { e.style.display = 'none'; }, 9000); } }
     else if (m.t === 'offline') { const e = $('#offl'); e.textContent = m.msg || ''; e.style.display = m.msg ? 'block' : 'none'; }
     else if (m.t === 'clip') { copyText(m.text).then(ok => ok && toast('COPIED')); }
@@ -1210,13 +1387,13 @@ function connect() {
     else if (m.t === 'hello') { if (m.personas) { PERS = Object.fromEntries(m.personas.map(p => [p.id, p])); renderPersonaList(); applyLook(); } if (m.prefs) { Object.assign(PREFS, m.prefs); showPrefs(); } if (m.persona && m.persona !== S.theme) setTheme(m.persona, false); followup = m.followup !== false; showFollow(); muted = !!m.muted; handsfree = !!m.handsfree; setMode(m.state); showMute(); $('#hist').textContent = ''; (m.history || []).forEach(h => addMsg(h.role, h.text)); }
     else if (m.t === 'state') { setMode(m.state, m.detail); if (m.state !== 'idle') touchAct(); }
     else if (m.t === 'level') {
-      if (idleOn && m.src === 'mic' && m.v > .4) idleShow(false);                      // a sound from you
       if ((m.src === 'mic' && S.mode === 'listening') || (m.src === 'out' && S.mode === 'speaking')) S.tgt = Math.max(S.tgt * .5, m.v * (S.mAmp || 1));
     }
     else if (m.t === 'restarted') showHealth('restarted because: ' + m.what + ' (' + m.why + ')');
     else if (m.t === 'claudestat') claudeStat(m);
     else if (m.t === 'presence') { const d = $('#pdot'); d.hidden = !m.on; d.classList.toggle('paused', !!m.paused); d.querySelector('span').textContent = m.paused ? 'CAM PAUSED' : 'CAM ON'; document.documentElement.classList.toggle('away', m.present === false);
       if (m.present === true && idleOn) idleShow(false); }
+    else if (m.t === 'thermal') { if (m.on) { S.heatLite = !S.lite; if (S.heatLite) setLite(true, false, 'heat'); toast('RUNNING HOT (' + m.temp + '°C): LITE MODE UNTIL IT COOLS'); } else if (S.heatLite) { S.heatLite = false; setLite(false, false); toast('COOLED DOWN: FULL MODE'); } }
     else if (m.t === 'whisper') { document.documentElement.classList.toggle('whisper', !!m.on); }
     else if (m.t === 'musicstate') { if (MUSIC.set) MUSIC.set(m); }
     else if (m.t === 'mkt') { if ((m.ops || []).some(o => o.op === 'close')) { if (MKT.card) closeCard(MKT.card); } else if (MKT.ctl) MKT.ctl.apply(m.ops); else MKT.pending.push(...(m.ops || [])); }
@@ -1225,13 +1402,18 @@ function connect() {
     else if (m.t === 'holo_bullets') { if (HOLO.ctl && HOLO.ctl.setBullets) HOLO.ctl.setBullets(m.id, m.list || []); }
     else if (m.t === 'mood') { moodT = (PREFS.feelings === false ? null : MOOD[m.v]) || [0, 1, 1]; }
     else if (m.t === 'listen') { handsfree = m.on; showMute(); }
-    else if (m.t === 'muted') { muted = m.on; showMute(); }
+    else if (m.t === 'muted') { muted = m.on; showMute(); micNote(); }
     else if (m.t === 'status') showStatus(m.lines, m.active);
     else if (m.t === 'ui') setGhost(!!m.hidden);
     else if (m.t === 'guide') { const g = GUIDES[m.gid]; if (g) g.setStatus(m.status, m.state); if (m.step === 'next' && g) g.next(); }
     else if (m.t === 'action_result') { if (!m.result.ok) toast(m.result.error.toUpperCase()); }
-    else if (m.t === 'msg') { addMsg(m.role, m.text); touchAct(); if (m.role === 'you') chatPush('me', m.text); else if (m.role !== 'sys') chatPush('ai', m.text); }
+    else if (m.t === 'msg') { addMsg(m.role, m.text); if (m.role === 'you' || m.role === 'jarvis') touchAct(); if (m.role === 'you') chatPush('me', m.text); else if (m.role !== 'sys') chatPush('ai', m.text); }
     else if (m.t === 'card') { if (POP) { if (window.__popReady) popAdd(m.card); } else if (!DOCK) { addCard(m.card); if (m.card.full) { const c = cards[cards.length - 1]; c && expandCard(c); } if (m.card.secret) { const c = cards[cards.length - 1]; setTimeout(() => c && closeCard(c), m.card.type === 'guide' ? 600000 : 60000); } } }   // a secret card (the pairing code) removes itself after 60 s
+    else if (m.t === 'window') winRing(m);
+    else if (m.t === 'wifi_screen') { $('#m-set').click(); document.querySelector('[data-sg=wifi]').classList.add('open'); wifiLoad(true); }
+    else if (m.t === 'conn_warn') showHealth((m.lines || []).join(' · '));
+    else if (m.t === 'notes') toast('FROM YOUR NOTES: ' + (m.titles || []).join(' · '));
+    else if (m.t === 'mapmode') { if (MF && MF.fr.contentWindow) MF.fr.contentWindow.postMessage({ t: 'mapmode', mode: m.mode }, '*'); }
     else if (m.t === 'embed') { if (!DOCK) embed(m); }
     else if (m.t === 'caption') { if (m.text) showCap(m.text); }
     else if (m.t === 'health') { showHealth(m.msg); }
@@ -1265,7 +1447,7 @@ function demo() {
   }
 }
 
-if (P.has('hide')) document.head.insertAdjacentHTML('beforeend', '<style>' + P.get('hide') + '{display:none !important}</style>');   // debug: bisect cost
+if (P.has('hide') && /^[#.\w\s,>:-]{1,200}$/.test(P.get('hide'))) { const st = document.createElement('style'); st.textContent = P.get('hide') + '{display:none !important}'; document.head.append(st); }   // debug: bisect cost (a plain CSS selector only: a crafted link can never inject markup)
 async function selftest() {
   S.paused = true; let simT = performance.now(); last = simT;
   const frames = n => { for (let i = 0; i < n * 2; i++) { simT += 16.7; tick(simT); } return Promise.resolve(); }, bad = [], log = [];

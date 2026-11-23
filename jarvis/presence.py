@@ -84,7 +84,9 @@ def start(on_change=None, busy=None):
     if busy:
         _cb["busy"] = busy
     if _th["t"] and _th["t"].is_alive():
-        return True
+        if not _th["stop"].is_set():
+            return True
+        _th["t"].join(3)                                               # just stopped: let the old loop finish, then start a fresh one (not silently dead)
     if not phonecam.get_url():
         STATE["err"] = "no phone camera is set up"
         return False

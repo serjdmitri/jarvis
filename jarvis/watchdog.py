@@ -91,7 +91,7 @@ class Watchdog:
         try:                                                    # the page shows "restarted because: ..." once, in a small chip
             os.makedirs(os.path.join(ROOT, "run"), exist_ok=True)
             with open(os.path.join(ROOT, "run", "restart_reason.json"), "w") as f:
-                json.dump({"t": now, "what": str(what)[:30], "why": str(why)[:80]}, f)
+                json.dump({"t": now, "what": str(what)[:30], "why": str(why)[:80], "n": len(self.restarts)}, f)
         except OSError:
             pass
         log.info("restart %s (%s) [%d in the last %ds]", what, why, len(self.restarts), LIMIT_S)

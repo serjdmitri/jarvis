@@ -15,7 +15,8 @@ import uuid
 from . import settings
 
 UA = {"User-Agent": "jarvis-local-assistant/0.1"}
-LAST = {"q": None}                          # the last place asked about: "show it on the map" means this
+LAST = {"q": None}
+LAST_SPEC = {"id": None, "t": 0.0}          # the last route/place map shown: "walk" or "bike" alone switches it                          # the last place asked about: "show it on the map" means this
 SPECS = {}                                   # id -> what the map page draws (kept in memory)
 _IP = {"t": 0.0, "v": None}
 MODES = {"car": ("driving", "http://router.project-osrm.org/route/v1/driving/"), "foot": ("walking", "https://routing.openstreetmap.de/routed-foot/route/v1/foot/"),
@@ -86,7 +87,7 @@ def geocode(q):
 
 def _geocode(q):
     try:
-        hit = _get("https://nominatim.openstreetmap.org/search?format=json&limit=1&addressdetails=0&q=" + urllib.parse.quote(q), 6)
+        hit = _get("https://nominatim.openstreetmap.org/search?accept-language=en&format=json&limit=1&addressdetails=0&q=" + urllib.parse.quote(q), 6)
         if hit:
             lat, lon = float(hit[0]["lat"]), float(hit[0]["lon"])
             if valid(lat, lon):
@@ -194,7 +195,7 @@ def suggest(q, n=6):
         print("[suggest] photon failed:", type(e).__name__, flush=True)
     if not out:
         try:
-            for e in _get("https://nominatim.openstreetmap.org/search?format=json&limit=%d&q=%s" % (n, urllib.parse.quote(q)), 6):
+            for e in _get("https://nominatim.openstreetmap.org/search?accept-language=en&format=json&limit=%d&q=%s" % (n, urllib.parse.quote(q)), 6):
                 la, lo = float(e["lat"]), float(e["lon"])
                 if valid(la, lo):
                     out.append({"label": e.get("display_name", q)[:160], "lat": la, "lon": lo})
@@ -254,26 +255,76 @@ def location_line(me):
     return f"Location: {me['label']} (source: {SOURCE_WORDS.get(me['source'], me['source'])})" if me else "Location: unknown"
 
 
+_RCACHE = {}                                          # (mode, rounded a, rounded b) -> (time, route): the same trip asked again is instant and costs the routing server nothing
+_RL = {"t": {}, "lock": threading.Lock()}
+SPEED_KMH = {"car": 45.0, "foot": 5.0, "bike": 15.0}   # only for the labelled straight-line estimate when the routing service is down (no traffic, no roads)
+FLIGHT_KMH, FLIGHT_MIN_M = 800.0, 500_000              # a very rough cruise speed, no airport time, no prices: shown only for 500 km and up, labelled approximate
+WALK_FIRST_S = 480                                     # on foot first only when the walk is under about 8 minutes
+
+
+def _polite(host):
+    """The public routing servers ask for light use (about one request a second each): wait if the last request to this host was less than 1.1 s ago."""
+    with _RL["lock"]:
+        wait = _RL["t"].get(host, 0) + 1.1 - time.time()
+        if wait > 0:
+            time.sleep(min(wait, 1.2))
+        _RL["t"][host] = time.time()
+
+
 def route(mode, a, b):
-    """a, b = (lat, lon). -> {"dist_m","dur_s","geometry": [[lat, lon], ...]} or None."""
+    """a, b = (lat, lon). -> {"dist_m","dur_s","geometry": [[lat, lon], ...], "approx": False} or None. Cached 10 minutes."""
+    key = (mode, round(a[0], 3), round(a[1], 3), round(b[0], 3), round(b[1], 3))
+    hit = _RCACHE.get(key)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
     try:
         base = MODES[mode][1]
+        _polite(urllib.parse.urlparse(base).netloc)
         j = _get(f"{base}{a[1]},{a[0]};{b[1]},{b[0]}?overview=simplified&geometries=geojson", 7)
         r = j["routes"][0]
         pts = [[c[1], c[0]] for c in r["geometry"]["coordinates"]]
-        return {"dist_m": r["distance"], "dur_s": r["duration"], "geometry": pts}
+        out = {"dist_m": r["distance"], "dur_s": r["duration"], "geometry": pts, "approx": False}
+        _RCACHE[key] = (time.time(), out)
+        for k in [k for k, v in _RCACHE.items() if time.time() - v[0] > 3600]:
+            _RCACHE.pop(k, None)
+        return out
     except Exception:
         return None
 
 
+def approx_route(mode, a, b):
+    """The routing service is down or rate-limited: a straight line, distance x 1.3 for the bends, typical speed. Always labelled approximate."""
+    d = haversine(a, b) * 1.3
+    return {"dist_m": d, "dur_s": d / 1000.0 / SPEED_KMH[mode] * 3600.0, "geometry": [[a[0], a[1]], [b[0], b[1]]], "approx": True}
+
+
 def routes_all(a, b):
+    """-> {"car": route, "foot": route, "bike": route}: a real route where the service answers, else the labelled straight-line estimate."""
     out, ths = {}, []
     for m in MODES:
         t = threading.Thread(target=lambda m=m: out.__setitem__(m, route(m, a, b)), daemon=True)
         t.start(); ths.append(t)
     for t in ths:
-        t.join(9)
-    return {m: out.get(m) for m in MODES}
+        t.join(12)
+    far = haversine(a, b) >= 3_000_000                       # across an ocean a straight-line drive is nonsense: no road estimate at all
+    return {m: out.get(m) or (None if far else approx_route(m, a, b)) for m in MODES}
+
+
+def flight_estimate(a, b):
+    """-> {"dist_m","dur_s","approx": True} for 500 km and up, else None. Straight-line distance / a typical speed. No prices, no booking, no airport time."""
+    d = haversine(a, b)
+    return {"dist_m": d, "dur_s": d / 1000.0 / FLIGHT_KMH * 3600.0, "approx": True} if d >= FLIGHT_MIN_M else None
+
+
+def default_mode(rts):
+    """Car, unless the walk is very short."""
+    f = rts.get("foot")
+    if f and not f.get("approx") and f["dur_s"] < WALK_FIRST_S:
+        return "foot"
+    for m in ("car", "foot", "bike"):
+        if rts.get(m):
+            return m
+    return None
 
 
 NOM_TERM = {"coffee": "cafe", "coffee shop": "cafe", "food": "restaurant", "groceries": "supermarket", "grocery store": "supermarket", "petrol station": "fuel", "gas station": "fuel",
@@ -286,7 +337,7 @@ def _nominatim_places(term, lat, lon, radius):
     d = radius / 111000
     box = f"{lon - d * 1.4},{lat + d},{lon + d * 1.4},{lat - d}"
     out = []
-    for e in _get("https://nominatim.openstreetmap.org/search?format=json&limit=15&bounded=1&viewbox=" + box + "&q=" + urllib.parse.quote(term), 8):
+    for e in _get("https://nominatim.openstreetmap.org/search?accept-language=en&format=json&limit=15&bounded=1&viewbox=" + box + "&q=" + urllib.parse.quote(term), 8):
         la, lo = float(e["lat"]), float(e["lon"])
         if valid(la, lo):
             out.append({"name": e.get("display_name", term).split(",")[0][:60], "lat": la, "lon": lo, "dist_m": haversine((lat, lon), (la, lo))})
@@ -353,8 +404,15 @@ def gmaps_link(origin, dest, mode="car"):
     return q + f"&destination={dest[0]:.5f},{dest[1]:.5f}&travelmode={TRAVELMODE.get(mode, 'driving')}"
 
 
+def apple_link(origin, dest, mode="car"):
+    """An Apple Maps directions link (opens in Maps on the iPhone)."""
+    q = f"https://maps.apple.com/?daddr={dest[0]:.5f},{dest[1]:.5f}&dirflg={ {'car': 'd', 'foot': 'w', 'bike': 'w'}.get(mode, 'd') }"
+    return q + (f"&saddr={origin[0]:.5f},{origin[1]:.5f}" if origin else "")
+
+
 def new_spec(**kw):
     sid = uuid.uuid4().hex[:10]
+    LAST_SPEC.update(id=sid, t=time.time())
     spec = {"id": sid, "mode": "car", "origin": None, "dest": None, "routes": {}, "places": [], "title": "", "imperial": imperial(), "created": time.time()}
     spec.update(kw)
     for old in [k for k, v in SPECS.items() if time.time() - v["created"] > 3600]:
@@ -363,31 +421,164 @@ def new_spec(**kw):
     return spec
 
 
-def directions_spec(dest_name, mode="car"):
-    """-> (spec, speech) or (None, error speech). "the nearest bank" routes to the nearest one."""
+def _street(addr):
+    return (addr or {}).get("road") or (addr or {}).get("pedestrian") or (addr or {}).get("neighbourhood") or (addr or {}).get("suburb") or ""
+
+
+def candidates(name, me, n=6):
+    """Places called `name`, the NEAREST to home first: a search in a box about 40 km around you (chains, airports, shops), else the one best match anywhere (cities, countries, landmarks).
+    -> [{"lat","lon","name","street","label","dist_m"}]; the first is the one Jarvis picks, the rest are the alternatives behind the arrows."""
+    out = []
+    if me:
+        d = 0.4
+        try:
+            q = urllib.parse.quote(name)
+            hits = _get(f"https://nominatim.openstreetmap.org/search?accept-language=en&format=json&limit=10&addressdetails=1&bounded=1&viewbox={me['lon'] - d},{me['lat'] + d},{me['lon'] + d},{me['lat'] - d}&q={q}", 6)
+            for h in hits or []:
+                lat, lon = float(h["lat"]), float(h["lon"])
+                if valid(lat, lon):
+                    nm = h.get("name") or h.get("display_name", name).split(",")[0]
+                    out.append({"lat": lat, "lon": lon, "name": nm, "street": _street(h.get("address")), "label": h.get("display_name", nm), "dist_m": haversine((me["lat"], me["lon"]), (lat, lon)),
+                                "bbox": h.get("boundingbox"), "class": h.get("class"), "type": h.get("type")})
+        except Exception:
+            out = []
+        out.sort(key=lambda c: c["dist_m"])
+        seen, uniq = set(), []
+        for c in out:
+            k = (round(c["lat"], 3), round(c["lon"], 3))
+            if k not in seen:
+                seen.add(k); uniq.append(c)
+        out = uniq[:n]
+    if not out:
+        g = geocode_full(name)
+        if g:
+            out = [dict(g, dist_m=haversine((me["lat"], me["lon"]), (g["lat"], g["lon"])) if me else 0)]
+    return out
+
+
+def geocode_full(q):
+    """One best match anywhere, with the bounding box (so a city or country can be framed). Cached 5 minutes."""
+    hit = _GEO.get("full:" + q.lower().strip())
+    if hit and time.time() - hit[0] < 300:
+        return hit[1]
+    try:
+        h = (_get("https://nominatim.openstreetmap.org/search?accept-language=en&format=json&limit=1&addressdetails=1&q=" + urllib.parse.quote(q), 6) or [None])[0]
+        if h:
+            lat, lon = float(h["lat"]), float(h["lon"])
+            if valid(lat, lon):
+                nm = h.get("name") or h.get("display_name", q).split(",")[0]
+                g = {"lat": lat, "lon": lon, "name": nm, "street": _street(h.get("address")), "label": h.get("display_name", nm), "bbox": h.get("boundingbox"), "class": h.get("class"), "type": h.get("type")}
+                _GEO["full:" + q.lower().strip()] = (time.time(), g)
+                return g
+    except Exception:
+        pass
+    return None
+
+
+def _spoken_name(c):
+    return c["name"] + (f" on {c['street']}" if c.get("street") and c["street"].lower() not in c["name"].lower() else "")
+
+
+def preload(lat, lon):
+    """Warm the tile cache for a place before the map flies there (the vector tiles of every zoom from the whole-earth view down to street level, 3 x 3 around the target at the close zooms): the flight does not wait for the network."""
+    def run():
+        try:
+            from . import tilecache
+            tj, _, _ = tilecache.get("ofm", "planet", fresh_s=3600)
+            tpl = json.loads(tj)["tiles"][0].replace("https://tiles.openfreemap.org/", "")
+            for z in range(2, 15):
+                n = 2 ** z
+                x = int((lon + 180.0) / 360.0 * n)
+                y = int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * n)
+                r = 1 if z >= 10 else 0
+                for dx in range(-r, r + 1):
+                    for dy in range(-r, r + 1):
+                        tilecache.get("ofm", tpl.replace("{z}", str(z)).replace("{x}", str((x + dx) % n)).replace("{y}", str(min(max(0, y + dy), n - 1))))
+        except Exception:
+            pass
+    threading.Thread(target=run, daemon=True).start()
+
+
+def directions_spec(dest_name, mode=None):
+    """-> (spec, speech) or (None, error speech). Picks the nearest match to home and says which; the others stay behind the arrows. `mode` None = car, or on foot when that is under about 8 minutes."""
     me = my_location()
     m = re.fullmatch(r"(?:the )?(?:nearest|closest) (.+)", dest_name.strip(), re.I)
-    g = None
+    cands = []
     if m and me:
         ps = places(m.group(1), me["lat"], me["lon"])
-        if ps:
-            g = {"lat": ps[0]["lat"], "lon": ps[0]["lon"], "name": ps[0]["name"]}
-    g = g or geocode(dest_name)
-    if not g:
+        cands = [{"lat": p["lat"], "lon": p["lon"], "name": p["name"], "street": "", "label": p["name"], "dist_m": p.get("dist_m", 0)} for p in ps[:6]]
+    if not cands:
+        cands = candidates(re.sub(r"^(?:the )", "", dest_name.strip(), flags=re.I) if len(dest_name) > 4 else dest_name, me)
+    if not cands:
         return None, f"I couldn't find {dest_name}."
     if not me:
         return None, "I don't know where you are yet. Tell me, for example: I'm in Miami Beach."
-    rts = routes_all((me["lat"], me["lon"]), (g["lat"], g["lon"]))
-    if not rts.get(mode):
-        mode = next((m for m in MODES if rts.get(m)), None)
-        if not mode:
-            return None, "I couldn't get a route there just now."
-    spec = new_spec(mode=mode, origin={"lat": me["lat"], "lon": me["lon"], "label": me["label"], "source": me["source"]},
-                    dest={"lat": g["lat"], "lon": g["lon"], "label": g["name"]}, routes=rts, title="Route to " + g["name"])
-    spec["gmaps"] = gmaps_link((me["lat"], me["lon"]), (g["lat"], g["lon"]), mode)
-    r = rts[mode]
-    approx = " (I'm guessing where you are from your internet address; say I'm in, and your town, to fix it.)" if me["source"] == "ip" else ""
-    return spec, f"{fmt_dur(r['dur_s'])} {'by car' if mode == 'car' else 'on foot' if mode == 'foot' else 'by bike'}, {fmt_dist(r['dist_m'])}.{approx}"
+    g = cands[0]
+    spec = new_spec(origin={"lat": me["lat"], "lon": me["lon"], "label": me["label"], "source": me["source"]}, dest={"lat": g["lat"], "lon": g["lon"], "label": g["name"], "street": g.get("street", "")},
+                    title="Route to " + g["name"], alts=cands, alt_i=0, fly=True)
+    return _fill_route(spec, mode)
+
+
+def _fill_route(spec, mode=None):
+    """Routes for car/walk/bike (+ a flight estimate when far), the default mode, the gmaps link, and the spoken line. Used again when another alternative is picked."""
+    me, g = spec["origin"], spec["dest"]
+    a, b = (me["lat"], me["lon"]), (g["lat"], g["lon"])
+    rts = routes_all(a, b)
+    fl = flight_estimate(a, b)
+    chosen = mode if mode in MODES and rts.get(mode) else default_mode(rts)
+    spec.update(routes=rts, flight=fl, mode=chosen or "car", title="Route to " + g["label"], traffic=False)
+    spec["gmaps"] = gmaps_link(a, b, spec["mode"])
+    preload(g["lat"], g["lon"])
+    name = _spoken_name({"name": g["label"], "street": g.get("street", "")})
+    parts = []
+    if chosen:
+        r = rts[chosen]
+        way = {"car": "by car", "foot": "on foot", "bike": "by bike"}[chosen]
+        parts.append(f"{name}: {fmt_dur(r['dur_s'])} {way}, {fmt_dist(r['dist_m'])}." + (" That is a rough straight-line estimate: the route service did not answer." if r.get("approx") else " The time has no live traffic."))
+        others = [f"{fmt_dur(rts[k]['dur_s'])} {w}" for k, w in (("car", "by car"), ("foot", "on foot"), ("bike", "by bike")) if k != chosen and rts.get(k) and not rts[k].get("approx")]
+        if others and not (rts[chosen].get("approx")):
+            parts.append("Also " + ", ".join(others[:2]) + ".")
+    elif not fl:
+        return None, "I couldn't get a route there just now."
+    if fl:
+        parts.append(f"By air about {fmt_dur(fl['dur_s'])} in the air, approximate, no airport time.")
+    if me["source"] == "ip":
+        parts.append("(I'm guessing where you are from your internet address; say I'm in, and your town, to fix it.)")
+    alts = spec.get("alts") or []
+    if len(alts) > 1:
+        parts.append(f"I picked the nearest of {len(alts)}; use the arrows for the others.")
+    return spec, " ".join(parts)
+
+
+def pick_alt(sid, i):
+    """The arrows on the map: switch to another match for the same name."""
+    spec = SPECS.get(sid)
+    if not spec or not spec.get("alts") or not spec.get("origin") or not 0 <= i < len(spec["alts"]):
+        return None
+    g = spec["alts"][i]
+    spec.update(dest={"lat": g["lat"], "lon": g["lon"], "label": g["name"], "street": g.get("street", "")}, alt_i=i, fly=False)
+    _fill_route(spec, None)
+    return spec
+
+
+def place_view_spec(name):
+    """"show me Tokyo", "go to Paris", "show the Eiffel Tower": a map that flies there (an arc, scaled by distance), the whole city or country framed. -> (spec, speech) or (None, None) when it is not a place."""
+    me = my_location()
+    g = geocode_full(name)
+    if not g or (g.get("class") in ("highway", "building") and not me):
+        return None, None
+    cls, typ = g.get("class"), g.get("type")
+    placey = cls in ("place", "boundary", "tourism", "historic", "natural", "aeroway", "railway", "leisure", "amenity", "man_made", "waterway", "landuse") or typ in ("city", "country", "administrative")
+    if not placey:
+        return None, None
+    spec = new_spec(origin=({"lat": me["lat"], "lon": me["lon"], "label": me["label"], "source": me["source"]} if me else None),
+                    dest={"lat": g["lat"], "lon": g["lon"], "label": g["name"], "bbox": g.get("bbox"), "kind": typ or cls}, title=g["name"], fly=True, live=False)
+    spec["gmaps"] = f"https://www.google.com/maps/search/?api=1&query={g['lat']:.5f},{g['lon']:.5f}"
+    if me:
+        spec["dist_m"] = haversine((me["lat"], me["lon"]), (g["lat"], g["lon"]))
+    preload(g["lat"], g["lon"])
+    far = f" It is {fmt_dist(spec['dist_m'])} from you." if me and spec["dist_m"] >= FLIGHT_MIN_M else ""
+    return spec, f"Here is {g['name']}.{far}"
 
 
 def places_spec(kind):
@@ -476,15 +667,26 @@ def parse_command(text):
     m = re.search(r"\bwhere(?:'s| is) the nearest (.+)$", low)
     if m:
         return {"kind": "places", "q": m.group(1).strip()}
-    m = re.search(r"\b(?:how long (?:does it take )?to (?:(walk|cycle|bike|drive|get)(?: there)? to )?|how far is |how far to |directions? to |route to |navigate to |take me to |get me to |how do i get to |how long to (?:(walk|cycle|bike|drive) to )?)(.+)$", low)
+    m = (re.search(r"\bhow (?:long|much time) (?:will|would|does|do) (?:it|that|the trip|the drive|the walk) (?:take|be)(?: me)?(?: to| for me to)? (?:(walk|cycle|bike|drive|get)(?: there)? to |get to |walk to |drive to |cycle to |bike to |go to )(.+)$", low)
+         or re.search(r"\b(?:how (?:long|far) is the (drive|walk|ride|trip|cycle) to |what(?:'s| is) the (?:travel |drive |walking )?time to (?:get to )?|time to (?:get to |walk to |drive to )|how long (?:is|would be) (?:it|the (?:drive|walk))(?: to| from here to) |how long to (?:(walk|cycle|bike|drive|get) to )?|how long (?:does it take )?to (?:(walk|cycle|bike|drive|get)(?: there)? to )?|how far is |how far to |how far away is |directions? to |route to |navigate to |take me to |get me to |how do i get to )(.+)$", low))
     if m:
-        dest = t[m.start(3):m.end(3)].strip(" .?!") if m.group(3) else None
-        mode = {"walk": "foot", "cycle": "bike", "bike": "bike", "drive": "car", "get": "car"}.get(m.group(1) or m.group(2) or "", "car")
+        dest = t[m.start(m.lastindex):m.end(m.lastindex)].strip(" .?!") if m.group(m.lastindex) else None
+        word = next((g for g in m.groups()[:-1] if g), "")
+        mode = {"walk": "foot", "cycle": "bike", "bike": "bike", "ride": "bike", "drive": "car", "get": None, "trip": None}.get(word)
         for w, md in MODE_WORDS.items():
             if re.search(r"\b" + w + r"\b", low):
                 mode = md
-        if dest and not re.fullmatch(r"(?:the )?(?:orb|corner|jarvis|rose)", dest.lower()):
+        dest = re.sub(r"\s+(?:from here|please|from my house|from home)$", "", dest or "", flags=re.I).strip()
+        if dest and not re.fullmatch(r"(?:the )?(?:orb|corner|jarvis|rose|sleep|bed|settings?|the (?:next|previous) (?:page|card))", dest.lower()):
             return {"kind": "directions", "dest": re.sub(r"^(?:the )", "", dest), "mode": mode}
+    if re.fullmatch(r"(?:please )?(?:give me |get |show me )?(?:directions|a route|navigation)(?: please)?|(?:please )?how (?:far|long)(?: is it| will it take| does it take)?|(?:please )?take me there|(?:please )?navigate", low):
+        return {"kind": "ask_dest"}                                        # incomplete: ask one short question instead of guessing
+    m = re.fullmatch(r"(?:please )?(?:(?:switch|change|go) to |show |what about |how about |try |use |by |on )?(?:the )?(walk|walking|on foot|bike|biking|cycling|cycle|car|drive|driving|by car|by bike)(?: (?:instead|mode|route|time))?(?: please)?", low)
+    if m and LAST_SPEC["id"] and time.time() - LAST_SPEC["t"] < 1800:
+        return {"kind": "mode", "mode": MODE_WORDS.get(m.group(1), "car")}
+    m = re.fullmatch(r"(?:please )?(?:show me|show|take me to|go to|fly to|zoom to|zoom in on|pull up|let me see|where is|where's|find) (?:the )?(.{3,50})", low)
+    if m and not re.match(r"(?:me|my|a|an|some|all|your|this|that|it|more|less|the (?:map|time|weather|news|orb|screen|desktop|camera|music|settings?))\b|(?:sleep|bed|work|school|class|town|a break|ahead|on|off|back|home|the next|next|previous|start|stop|map|weather|news|time|settings?|reminders?|alarms?|timers?|notes?|pictures?|photos?|videos?|images?|music|playlist|menu|home page|clock|calendar|schedule|nearest|closest|desktop|screen|camera)\b", m.group(1)):
+        return {"kind": "place_view", "place": t[m.start(1):m.end(1)].strip(" .?!")}
     m = re.search(r"\b(?:show me|show|open|pull up) (?:a |the )?(?:map of|map for|maps? (?:for|of)|map)\s*(.*)$", low)
     if m:
         place = t[m.start(1):m.end(1)].strip(" .?!")

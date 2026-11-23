@@ -191,7 +191,8 @@ def previous_track():
 
 
 def set_volume(pct):
-    pct = max(0, min(100, int(pct)))
+    from . import spotifyd
+    pct = spotifyd.cap(pct)                                              # never above the maximum volume you set
     dev, err = _target()
     if err:
         return {"ok": False, "message": err}
@@ -238,6 +239,28 @@ def now_url():
 DEV = r"(?:the go|my go|the surface|jarvis|my mac(?:book)?|the mac|my computer|my laptop|my phone|my iphone|the phone)"
 
 
+def play_liked(device=None):
+    """"play my liked songs": your saved tracks, shuffled, as one queue (needs the library permission: log in once more from the setup card)."""
+    dev, err = _target(device)
+    if err:
+        return {"ok": False, "message": err}
+    j, err = spotify._api("GET", "/me/tracks?limit=50")
+    if err:
+        if "403" in str(err) or "scope" in str(err).lower() or "permission" in str(err).lower():
+            return {"ok": False, "message": "I need permission to see your liked songs: log in to Spotify again from the setup card."}
+        return {"ok": False, "message": err}
+    uris = [o["track"]["uri"] for o in (j or {}).get("items") or [] if o and o.get("track") and o["track"].get("uri")]
+    if not uris:
+        return {"ok": False, "message": "You have no liked songs yet."}
+    import random
+    random.shuffle(uris)
+    _, err = spotify._api("PUT", "/me/player/play" + _q(dev), {"uris": uris[:50]})
+    if err:
+        return {"ok": False, "message": err}
+    LAST.update(item={"kind": "track", "uri": uris[0], "url": None, "name": "your liked songs", "artist": "", "image": None}, t=time.time())
+    return {"ok": True, "message": "Playing your liked songs, shuffled.", "item": LAST["item"], "device": dev.get("name")}
+
+
 def _dev_word(s):
     s = (s or "").lower()
     return "go" if re.search(r"\b(?:go|surface|jarvis)\b", s) else "mac" if re.search(r"\b(?:mac|macbook|computer|laptop)\b", s) else "phone" if re.search(r"\b(?:phone|iphone)\b", s) else None
@@ -256,10 +279,14 @@ def parse(text):
     m = re.fullmatch(r"(?:please )?play (?:it |this |that |the music |music )?on (" + DEV + ")", low)
     if m:
         return {"op": "transfer", "device": _dev_word(m.group(1))}
+    if re.fullmatch(r"(?:please )?(?:play|put on|shuffle) (?:my |all my |the )?(?:liked|saved|favou?rite|favou?rited|starred) (?:songs|tracks|music)(?: on spotify)?|(?:please )?play my (?:likes|favou?rites)(?: on spotify)?", low):
+        return {"op": "liked"}
     m = re.fullmatch(r"(?:please )?play (?:my |the )(.+?) playlist(?: on spotify)?", low)
     if m:
         return {"op": "playlist", "name": m.group(1)}
     m = re.fullmatch(r"(?:please )?(?:play|put on|start) (.+?)(?: on spotify)?(?: on (" + DEV + "))?", low)
+    if m and re.match(r"(?:please )?(?:put on|start)\b", low) and "spotify" not in low and not re.search(r"\b(?:music|song|songs|track|album|playlist|radio|tunes?)\b", low):
+        m = None                                                     # "start a timer", "start the car", "put on my coat" are not music
     if m and not re.fullmatch(r"(?:it|that|this|some music|music|the music|something|a song|the song|again|the video|a video|video|my music)", m.group(1)):
         return {"op": "play", "target": m.group(1), "device": _dev_word(m.group(2)), "explicit": "spotify" in low}
     m = re.fullmatch(r"(?:please )?(?:search|look)(?: for| up)? (.+?) on spotify|(?:please )?(?:search spotify for|spotify search) (.+)", low)
@@ -287,6 +314,9 @@ def parse_control(text):
     m = re.fullmatch(r"(?:please )?(?:turn |make )?(?:the )?(?:music |spotify )?(?:volume )?(up|down|louder|quieter|softer)(?: a (?:bit|little))?", low)
     if m and re.search(r"music|spotify", low):
         return {"op": "volume", "delta": 10 if m.group(1) in ("up", "louder") else -10}
+    m = re.fullmatch(r"(?:please )?(?:turn |switch )?(?:on |off )?shuffle(?: (on|off))?(?: (?:the )?(?:music|songs?|spotify))?", low)
+    if m:
+        return {"op": "shuffle", "on": not (m.group(1) == "off" or low.startswith(("turn off", "switch off", "shuffle off")))}
     m = re.fullmatch(r"(?:please )?set (?:the )?(?:music |spotify )?volume to (\d{1,3})(?: percent)?", low)
     if m and re.search(r"music|spotify", low):
         return {"op": "volume", "set": int(m.group(1))}
@@ -297,7 +327,8 @@ def parse_control(text):
 def music_card(st):
     it = st.get("item") or {}
     return {"type": "music", "gid": "music", "title": "MUSIC", "name": it.get("name", ""), "artist": it.get("artist", ""), "wide": 340, "image": it.get("image"), "playing": bool(st.get("playing")),
-            "progress": st.get("progress", 0), "duration": st.get("duration", 0), "device": (st.get("device") or {}).get("name", ""), "volume": (st.get("device") or {}).get("volume"), "url": it.get("url")}
+            "progress": st.get("progress", 0), "duration": st.get("duration", 0), "device": (st.get("device") or {}).get("name", ""), "volume": (st.get("device") or {}).get("volume"), "url": it.get("url"),
+            "conn": "Spotify: connected" if spotify.connected() else "Spotify: not connected (YouTube Music is used)"}
 
 
 def results_card(query, items):
@@ -331,6 +362,8 @@ def run(cmd):
             r = play(cmd["target"], cmd.get("device"))
         elif op == "playlist":
             r = play_playlist(cmd["name"])
+        elif op == "liked":
+            r = play_liked()
         elif op == "transfer":
             devs, err = devices()
             d = None if err else pick_device(devs, cmd.get("device"))
@@ -354,6 +387,12 @@ def run(cmd):
             return {"ok": st.get("ok"), "speech": st.get("message", ""), "cards": [music_card(st)] if st.get("item") else []}
         elif op in ("pause", "resume", "next", "previous"):
             r = {"pause": pause, "resume": resume, "next": next_track, "previous": previous_track}[op]()
+        elif op == "shuffle":
+            dev, err = _target()
+            if err:
+                return {"ok": False, "speech": err}
+            _, err = spotify._api("PUT", f"/me/player/shuffle?state={'true' if cmd.get('on', True) else 'false'}&device_id=" + urllib.parse.quote(dev["id"]))
+            return {"ok": not err, "speech": err or ("Shuffle on." if cmd.get("on", True) else "Shuffle off.")}
         elif op == "volume":
             r = set_volume(cmd["set"]) if "set" in cmd else change_volume(cmd["delta"])
         else:

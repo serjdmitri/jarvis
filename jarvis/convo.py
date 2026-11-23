@@ -9,7 +9,7 @@ _SIGNOFF = re.compile(
     r"i'?m (?:good|fine|ok|okay|done|all set)|all (?:good|set)|"
     r"nothing(?: else| more| for now| right now)?|not (?:now|right now|today)|"
     r"good ?night|good ?bye|bye(?: bye)?|see you(?: later| soon)?|"
-    r"stop|never ?mind|cancel|enough|done|no more|that'?s fine)"
+    r"stop|(?:you can |please )?stop listening|never ?mind|cancel|enough|done|no more|that'?s fine)"
     r"(?: thanks| thank you| please)?$")
 # short, ambiguous things worth one model call ("yeah no", "I think that's okay") rather than a guess
 _MAYBE = re.compile(r"\b(no|nope|nothing|thanks|thank|good|fine|okay|ok|done|enough|later|bye|goodbye|cancel|stop|all)\b")
@@ -21,6 +21,15 @@ def norm(text):
     t = re.sub(r"^(?:hey |ok |okay |well |um |uh |erm |yeah |yes |so )+", "", re.sub(r"\s+", " ", t).strip())
     t = re.sub(r"\s+(?:jarvis|rose)$", "", t)
     return t.strip()
+
+
+_NOISE = re.compile(r"^(?:you|uh|um|hmm+|huh|oh|ah|the end|thanks? for watching|thank you for watching|please subscribe|subtitles by.*|www\..*|music|applause|laughter|\.+)$")
+
+
+def is_noise(text):
+    """What a speech recogniser makes up from a TV, a cough or room noise: never a command."""
+    n = re.sub(r"[^a-z. ]+", " ", (text or "").lower()).strip()
+    return not n or bool(_NOISE.match(re.sub(r"\s+", " ", n)))
 
 
 def is_signoff(text):

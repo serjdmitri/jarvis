@@ -127,6 +127,35 @@ def send_file(path, title="From Jarvis", message="", click=None):
     return {"ok": ok, "message": "sent" if ok else "ntfy refused it"}
 
 
+def _human(n):
+    return f"{n / 1e6:.1f} MB" if n >= 1e6 else f"{max(1, round(n / 1e3))} KB"
+
+
+def send_download(path, title="From Jarvis", on_complete=None):
+    """What "send to my phone" really does for a file: the notification carries a TAP-TO-DOWNLOAD link to a one-time, 10-minute address on the Go (home Wi-Fi only) that serves the file with
+    Content-Disposition: attachment, so Safari saves it to Files > Downloads. The notification shows the file name, the size and "tap to save to Downloads" (never the link or the topic).
+    -> {"ok","message","sid","name","size"}; "ok" only means the notification was sent. The download itself is confirmed only by fileshare.proof(sid) (every byte served)."""
+    from . import fileshare
+    global _last
+    try:
+        st = fileshare.stage(path, kind="phone", on_complete=on_complete)
+    except fileshare.Refused as e:
+        return {"ok": False, "message": str(e)}
+    except OSError:
+        return {"ok": False, "message": "I could not prepare that file."}
+    if time.time() - _last < 4:
+        return {"ok": False, "message": "too many sends; wait a few seconds"}
+    headers = {"Title": _hdr(title[:80]), "Click": st["url"], "Priority": "default", "User-Agent": "jarvis-local", "Tags": "jarvis"}
+    msg = f"{st['name']} · {_human(st['size'])} · tap to save to Downloads"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(f"{SERVER}/{get_topic()}", data=msg.encode(), headers=headers, method="POST"), timeout=10) as r:
+            ok = 200 <= r.status < 300
+    except Exception as e:                              # never str(e): it can carry the URL
+        return {"ok": False, "message": "could not reach ntfy (" + type(e).__name__ + ")"}
+    _last = time.time()
+    return {"ok": ok, "message": "sent" if ok else "ntfy refused it", "sid": st["sid"], "name": st["name"], "size": st["size"]}
+
+
 # ----------------------------------------------------------------------------- "anything new?": read alerts that arrived on the phone topic
 SEEN_PATH = None
 

@@ -183,6 +183,9 @@ def screenshot(source="screen"):
 
 
 # --- streaming helpers -----------------------------------------------------
+MAX_PRESS_S = 40                                                  # the longest a held press-to-talk is kept open
+
+
 class Sentences:
     """Feed streamed text deltas, get complete sentences as soon as they are finished.
     A trailing JSON/code block is withheld (never spoken)."""
@@ -288,6 +291,8 @@ class Assistant:
         self._timing = None
         self._played_gen = None
         self.brain_ready = threading.Event()
+        from . import machelper as _mh
+        _mh.ON_BACK = lambda n: None if quiet.active() else self.say("Your Mac is back." + (f" Sending the {n} thing{'s' if n != 1 else ''} that waited." if n else ""))
 
     def _set(self, state, detail=""):
         if state == "error" and self.state != "error":
@@ -299,6 +304,12 @@ class Assistant:
             if quiet != music.STATE.get("ducked", False):
                 music.STATE["ducked"] = quiet
                 opener.NOTIFY({"t": "embed", "kind": "win", "cmd": "duck" if quiet else "unduck", "type": "video"})
+        sq = state in ("recording", "transcribing", "thinking", "speaking")          # the Spotify player is lowered the same way (its own stream, instant), and comes back
+        if sq != getattr(self, "_sp_ducked", False):
+            self._sp_ducked = sq
+            from . import spotifyd
+            if spotifyd.binary():
+                threading.Thread(target=spotifyd.duck, args=(sq,), daemon=True).start()
         if state == "idle" and self._pending:
             name, self._pending = self._pending, None
             quiet, self._pending_quiet = getattr(self, "_pending_quiet", False), False
@@ -837,6 +848,13 @@ class Assistant:
             self.ep = endpoint.Endpointer(self.rec, stt.transcribe)
             self.ep.start()
         self._set("recording", "manual press (muted)" if self.muted else ("looking + listening" if look else "listening"))
+        t0 = self.t0
+        def _watch():                                                  # a press that is never released (a lost touch-up, the window lost focus) must not leave the mic "recording" for ever
+            time.sleep(MAX_PRESS_S)
+            if self.state == "recording" and self.t0 == t0 and self.rec is not None:
+                print("[press] never released: released after", MAX_PRESS_S, "s", flush=True)
+                self.release()
+        threading.Thread(target=_watch, daemon=True).start()
 
     def cancel_press(self):
         """A hold that turned out to be a drag of the orb: throw the recording away, no turn."""
@@ -949,6 +967,19 @@ class Assistant:
             threading.Thread(target=self.run_send, args=(local["send"]["to"], local["send"]["what"]), daemon=True).start()
         if local.get("resend"):
             threading.Thread(target=self.resend_failed, daemon=True).start()
+        if local.get("helper") == "test":
+            def _gt():
+                from . import machelper
+                st = machelper.status(True)
+                if st in ("asleep", "unset"):
+                    self.say("The Mac helper is " + ("asleep or unreachable." if st == "asleep" else "not set up yet. Run the install command on the Mac.") + " Library models and the Go display still work.")
+                else:
+                    self.say(f"The Mac helper is {st}. Generators it can use: " + ", ".join(machelper._st["gens"]) + ". Without a token only Stable Fast 3D is used.")
+            threading.Thread(target=_gt, daemon=True).start()
+        if local.get("parts3d"):
+            threading.Thread(target=self.run_parts3d, args=(local["parts3d"],), daemon=True).start()
+        if local.get("printable"):
+            threading.Thread(target=self.run_printable, args=(local["printable"],), daemon=True).start()
         if local.get("textmsg"):
             from . import textmsg
             k = local["textmsg"]["kind"]
@@ -1010,6 +1041,14 @@ class Assistant:
             threading.Thread(target=self.run_product, args=(local["product"],), daemon=True).start()
         if local.get("learn"):
             threading.Thread(target=self.run_learn, args=(local["learn"],), daemon=True).start()
+        if local.get("deskfeature"):
+            threading.Thread(target=self.run_deskfeature, args=(local["deskfeature"],), daemon=True).start()
+        if local.get("office"):
+            threading.Thread(target=self.run_office, args=(local["office"],), daemon=True).start()
+        if local.get("disk"):
+            threading.Thread(target=self.run_disk, args=(local["disk"],), daemon=True).start()
+        if local.get("viewfile"):
+            threading.Thread(target=self.run_viewfile, args=(local["viewfile"],), daemon=True).start()
         if local.get("sendfile"):
             def _sf(name=local["sendfile"]):
                 from . import fileshare
@@ -1081,11 +1120,14 @@ class Assistant:
         if act:
             self.run_open(act)
 
+    _route_name = None
+
     def _answer_local(self, text, local, turn, T):
         """A skill answered (no Claude): speak it, show its cards."""
         self.on_msg("you", text)
         continuity.add(text or "", local.get("speech") or "")
-        opener.NOTIFY({"t": "heard", "text": (text or "")[:140], "route": "skill: " + (next((k for k in local if k not in ("speech", "cards")), "answer"))})
+        opener.NOTIFY({"t": "heard", "text": (text or "")[:140], "route": ("" if (self._route_name or "").startswith("look:") or self._route_name == "brain" else "skill: ") + (self._route_name or skills.take_name() or next((k for k in local if k not in ("speech", "cards")), "answer"))})
+        self._route_name = None
         for k, v in (local.get("set") or {}).items():             # a spoken preference change is applied BEFORE the reply, so "Faster." is already faster
             try:
                 self.apply_pref(k, v)
@@ -1106,26 +1148,31 @@ class Assistant:
         T.mark("done")
         extras.HISTORY.append(dict(T.marks)); del extras.HISTORY[:-20]
         line = T.line()
+        from . import perf
+        perf.from_timing(T.marks, True)
         print("TIMING (local)", line, flush=True)
         self.on_msg("sys", "⏱ " + line)
         if local.get("expect"):
             self.expect = {"kind": local["expect"], "text": local.get("retry", "")}
-        opened = self._after_reply(local["speech"], turn, gen, allow_followup=local.get("ui") is None and not local.get("open") and not local.get("mute") and not local.get("persona"))
+        opened = self._after_reply(local["speech"], turn, gen, allow_followup=local.get("ui") is None and not local.get("open") and not local.get("mute") and not local.get("persona"), allow_window=not local.get("mute") and not local.get("persona") and not local.get("exit"))
         if self._alive(turn) and not opened:
             self._set("idle")
 
     # --- conversation mode ----------------------------------------------------------
-    def _after_reply(self, shown, turn, gen, allow_followup=True):
+    def _after_reply(self, shown, turn, gen, allow_followup=True, allow_window=True):
         """After a reply: a question opens the mic; otherwise ask 'Anything else?' and open it. Muted: never."""
         if self.muted or not self._alive(turn):
             return False
+        window = 0
         if not convo.is_question(shown):
             if quiet.active():
                 return False                                # quiet hours: no 'Anything else?' and no open mic
             if self.translate_to:
                 pass                                        # translate mode: keep the mic open for the next sentence, without 'Anything else?'
             elif not (allow_followup and self.followup and (shown or "").strip()):
-                return False
+                window = prefs.listen_window() if allow_window else 0            # the follow-up window: keep listening for a few seconds, no wake phrase needed
+                if not window:
+                    return False
             else:
                 line = random.choice(personas.PERSONAS[self.persona]["followup"])
                 self.speaker.add(line, gen)
@@ -1135,9 +1182,22 @@ class Assistant:
         if not self._alive(turn) or self.muted:
             return False
         from . import wake
+        if window:
+            return self._conversation_open(wait=window, window=True)
         return self._conversation_open(wait=wake.ANSWER_WAIT_S if (convo.is_question(shown) or self.expect) else None)
 
-    def _conversation_open(self, wait=None):
+    def maybe_morning_brief(self):
+        """OFF by default (setting morning_brief_wake). On the first wake of the day it gives the briefing (weather and reminders; the calendar only if one is already connected, read-only). -> True when it took over the wake."""
+        if not settings.get("morning_brief_wake") or time.localtime().tm_hour < 4:
+            return False
+        today = time.strftime("%Y-%m-%d")
+        if settings.get("morning_brief_done") == today:
+            return False
+        settings.update(morning_brief_done=today)
+        threading.Thread(target=self.ask_text, args=("give me my briefing",), daemon=True).start()
+        return True
+
+    def _conversation_open(self, wait=None, window=False):
         hf = self.hf
         if hf is None:                                        # wake phrases are off: open the mic just for this conversation
             from .wake import HandsFree
@@ -1148,13 +1208,14 @@ class Assistant:
                 if hf.stream is not None:
                     break
                 time.sleep(0.05)
-        ok = hf.open_conversation(self.speaker.last_end, wait)
+        ok = hf.open_conversation(self.speaker.last_end, wait, window=window)
         self.in_conv = ok
         return ok
 
     def conversation_end(self):
         """Close the conversation: the mic goes back to wake-word listening (or off, if it was opened only for this)."""
         self.in_conv = False
+        opener.NOTIFY({"t": "window", "on": False})
         hf = self.hf
         if hf is not None and hf.cap is not None and hf.cap.get("conv"):
             hf.cap = None
@@ -1326,7 +1387,99 @@ class Assistant:
         sheet = data.get("sheet")
         self.ask_text(video.prompt_for(data), image=sheet, display=f"Video: {data['title'][:70]}", local=False)
 
+    def run_deskfeature(self, r):
+        """Features that need the camera or the model: build check, pinout (typed or read off the chip), shopping from the camera. Only runs because the user's own words asked."""
+        from . import deskfeatures as D
+        k = r["kind"]
+        try:
+            if k == "pinout":
+                reply = self.brain.ask(D.pinout_prompt(r["part"]), timeout=60)
+                pins = D.parse_pins(reply)
+                if not pins:
+                    self.say(f"I am not sure of the exact pinout of {r['part']}, so I won't guess. Check its datasheet.")
+                    return
+                D.sheet_save(r["part"], pins)
+                self.on_card({"type": "list", "title": "PINOUT: " + r["part"].upper(), "items": pins})
+                self.say(f"Here is the pinout of {r['part']}. It is from my knowledge, so check the real datasheet before wiring.")
+                return
+            shot = self._look_frame(retake=True, camera_only=True)
+            if k == "build_check":
+                reply = self.brain.ask(D.build_check_prompt(), image=shot, timeout=60)
+                line = moods.strip(split_reply_full(reply)[0]).strip() or "I cannot tell."
+                if line.upper().startswith("DONE"):
+                    self.say(line + " " + D.build_next())
+                else:
+                    self.say(line)
+            elif k == "pinout_look":
+                reply = self.brain.ask("[READ: what is the part number printed on the chip or board in the picture? Reply with ONLY the part number, or UNSURE.]", image=shot, timeout=60)
+                part = re.sub(r"[^A-Za-z0-9 ._+-]", "", moods.strip(reply)).strip()[:30]
+                if not part or part.upper().startswith("UNSURE"):
+                    self.say("I can't read a part number. Move the chip closer to the camera.")
+                    return
+                self.say(f"I read {part}.")
+                self.run_deskfeature({"kind": "pinout", "part": part})
+            elif k == "shop_look":
+                reply = self.brain.ask("[IDENTIFY: what single item is the user holding or showing? Reply with ONLY its short name (1 to 4 words), or UNSURE.]", image=shot, timeout=60)
+                item = re.sub(r"[^A-Za-z0-9 .+/-]", "", moods.strip(reply)).strip()[:40]
+                if not item or item.upper().startswith("UNSURE"):
+                    self.say("I can't tell what that is. Hold it closer and try again.")
+                    return
+                self.say(f"Added {item} to your shopping list." if extras.list_add(item) else f"{item} is already on the list.")
+        except Exception as e:
+            self.say("I couldn't do that: " + ("the camera did not answer" if "camera" in str(e).lower() or "picture" in str(e).lower() else type(e).__name__))
+
+    def run_office(self, o):
+        """"make that a spreadsheet / document": the last parts list or answer -> a real file by LibreOffice (headless) -> the Mac's Downloads through the helper. Says "saved" only after the helper confirms."""
+        from . import office, projects
+        text = ""
+        if o.get("about") == "parts":
+            try:
+                ps = projects.list_projects()
+                pl = (ps[0].get("plan") or {}) if ps else {}
+                text = "\n".join("- " + str(x) for x in (pl.get("parts") or []) if x) if isinstance(pl, dict) else ""
+            except Exception:
+                text = ""
+        if not text:
+            text = self.recent[-1][1] if self.recent else ""
+        path, why = office.convert(text, o["fmt"], "")
+        if not path:
+            self.say(why or "I couldn't make that file.")
+            return
+        r = self.run_mac({"file": path})
+        if not (r and r.get("ok")):
+            self.say(f"I made {os.path.basename(path)} here in the Jarvis office folder, but could not save it to your Mac.")
+
+    def run_disk(self, d):
+        """Disk space: read only. A small card with a bar and the five biggest folders in your home folder. Nothing is deleted or moved, and no clean-up command is suggested."""
+        from . import diskuse
+        try:
+            c, u = diskuse.card(bool(d.get("detail")))
+        except Exception as e:
+            self.say("I couldn't read the disk just now.")
+            return
+        self.on_card(c)
+        rows = None
+        if d.get("detail"):
+            rows, _ = diskuse.biggest()
+        self.say(diskuse.speech(u, rows))
+
+    def run_viewfile(self, kind):
+        """"open that picture / PDF": the newest saved look picture or office file, in the image or document viewer (fixed commands, paths only from our own folders)."""
+        import glob
+        pats = [str(config.SHOTS_DIR / "shot-*.jpg"), str(config.DATA / "scans" / "*.jpg")] if kind == "image" else [str(config.DATA / "office" / "*.pdf")]
+        files = sorted((f for p in pats for f in glob.glob(p)), key=os.path.getmtime)
+        if not files:
+            self.say("I don't have a picture to open yet." if kind == "image" else "I don't have a PDF to open yet.")
+            return
+        argv = (["imv"] if kind == "image" else ["papers"]) + [files[-1]]
+        self.say("Opening it." if opener.hypr_exec(argv) else "I couldn't open the viewer.")
+
     def run_macsend(self, what):
+        st = getattr(self, "_last_stl", None)
+        if what == "current" and st and os.path.exists(st) and time.time() - os.path.getmtime(st) < 600:        # "save it to my Mac" right after a printable part: that STL
+            self._last_stl = None
+            self.run_mac({"file": st})
+            return
         if what == "report_phone":
             if not research.LAST.get("summary"):                      # no report: "send that to my phone" means whatever is open (a map, a page, a video)
                 url = opener.EMBED.get("page_url") or video.LAST["url"]
@@ -1372,6 +1525,72 @@ class Assistant:
                 r = self.run_phone({"title": item["label"].capitalize()[:60], "message": item["value"][:900], **({"link": item["link"]} if item.get("link") else {})})
         if r and r.get("ok"):
             self.say(f"Sent {item['label']} to your {'Mac' if to == 'mac' else 'phone'}.")
+
+    def _show_spec(self, spec, lines=None):
+        if not spec:
+            self.say("I couldn't draw that.")
+            return False
+        c = holo.scene_card(spec)
+        self.holo3 = {"spec": c["spec"], "sel": None, "tour": None}
+        self.on_card(c)
+        if lines:
+            self.on_card({"type": "list", "gid": "wiring", "wide": 420, "small": True, "title": "WIRING · VERIFY BEFORE POWERING", "items": lines})
+        return True
+
+    def run_parts3d(self, r):
+        from . import parts3d
+        k = r["kind"]
+        try:
+            if k == "part":
+                if self._show_spec(parts3d.show_part(r["name"])):
+                    self.say("Here it is, real size, in 3D.")
+            elif k == "led":
+                spec, lines = parts3d.wire_led_to_gpio(r["gpio"], 330, r.get("color", "red"))
+                if self._show_spec(spec, lines):
+                    self.say(lines[0].split(" -> ")[0] + " goes through a resistor to the LED, and the LED goes to ground. Verify before powering.")
+            else:
+                lp = getattr(self, "_last_plan", None)
+                names = [p["name"] for p in lp[1].get("parts", [])] if lp else []
+                from . import projects
+                names = names or [b["name"] for b in projects.bin_items()]
+                spec, lines = parts3d.wiring_for_project(names)
+                if spec and self._show_spec(spec, lines):
+                    self.say("Here is the wiring for the parts I know. Verify before powering. Anything I don't know says check the datasheet.")
+                else:
+                    self.say("I don't have a parts list to wire yet. Ask for a parts list, or say what you have.")
+        except ValueError as e:
+            self.say(str(e)[:120])
+
+    def run_printable(self, r):
+        from . import printable
+        k = r["kind"]
+        if k == "printer":
+            settings.update(printer_mm=r["mm"], nozzle_mm=r["nozzle"])
+            self.say(f"Got it: {r['mm'][0]} by {r['mm'][1]} by {r['mm'][2]} millimetres, {r['nozzle']} nozzle.")
+            return
+        params = dict(printable.DEFAULTS[r["template"]], **r["params"])
+        if "id" in params and r["template"] == "spacer" and "id" not in r["params"] and params["id"] >= params["od"]:
+            params["id"] = params["od"] / 3
+        try:
+            res = printable.make(r["template"], params)
+        except ValueError as e:
+            self.say("That doesn't work: " + str(e)[:100])
+            return
+        if res["need_printer"]:
+            self.say("What is your printer's size and nozzle? Say: my printer is 220 by 220 by 250 with a 0.4 nozzle.")
+            return
+        self._show_spec(res["scene"], res["notes"] + res["fails"])
+        if res["fails"]:
+            self.say("It can't be printed as is: " + res["fails"][0])
+            return
+        import hashlib
+        from . import settingsio
+        settingsio.EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        path = settingsio.EXPORT_DIR / f"{r['template']}-{hashlib.sha256(res['stl']).hexdigest()[:6]}.stl"
+        path.write_bytes(res["stl"])
+        self._last_stl = str(path)
+        d = res["dims"]
+        self.say(f"A {r['template'].replace('_', ' ')}, {d[0]:.0f} by {d[1]:.0f} by {d[2]:.0f} millimetres. Checked: walls, size, watertight, flat bottom. Say save it to my Mac for the STL.")
 
     def send_text_draft(self):
         """Only here, only after your confirmation: the compose link goes to your phone (you choose the person and press send there)."""
@@ -1621,6 +1840,15 @@ class Assistant:
         explicit = bool(re.search(r"\b(?:my screen|the screen|my desktop|the desktop)\b", getattr(self, "_look_text", "") or "", re.I))
         path = self.grab(explicit_screen=explicit, camera_only=camera_only)
         self.on_msg("sys", f"Looking through the {self.last_source}.")
+        if self.last_source == "phone camera":                                   # the LIVE view is never paused or replaced: the picture is a snapshot COPY shown as its own small card
+            was_open = self.look["open"]
+            self.look.update(path=path, source=self.last_source, boxes=[], sel=None, open=True, live=True)
+            self.look["snap"] = os.path.basename(path)
+            if not was_open:
+                opener.NOTIFY({"t": "look", "op": "open", "src": "/shot/" + os.path.basename(path), "source": self.last_source, "boxes": []})
+                opener.NOTIFY({"t": "look", "op": "live", "stream": "/api/look/stream"})
+            opener.NOTIFY({"t": "look", "op": "snapshot", "src": "/shot/" + os.path.basename(path), "text": ""})
+            return path
         if self.look["open"] and self.look.get("source") == self.last_source:      # already open on this source: just swap the frame, no re-mount
             self.look.update(path=path, live=False, boxes=[], sel=None)
             opener.NOTIFY({"t": "look", "op": "frame", "src": "/shot/" + os.path.basename(path), "source": self.last_source})
@@ -1632,14 +1860,31 @@ class Assistant:
 
     def _look_show(self, boxes, path):
         self.look["boxes"], self.look["sel"] = boxes, None
+        try:
+            from . import deskfeatures
+            deskfeatures.record_sightings(boxes, self.look.get("source") or "camera")        # desk memory: "where did I put the resistors?"
+        except Exception:
+            pass
         opener.NOTIFY({"t": "look", "op": "boxes", "boxes": boxes})
+        if not boxes and getattr(self, "tracker", None):
+            self.tracker.stop()                                              # nothing to follow any more
         if boxes and self.look.get("source") == "phone camera":                 # the view stays LIVE under the boxes (no freeze); the boxes belong to the frame they were found on and fade as time passes
             self.look["live"] = True
             opener.NOTIFY({"t": "look", "op": "live", "stream": "/api/look/stream", "keep": True})
+            try:                                                              # the boxes follow their objects from the frame they were found on, up to the live picture
+                from . import track
+                if not hasattr(self, "tracker"):
+                    self.tracker = track.Tracker(opener.NOTIFY)
+                self.tracker.on_out = None
+                if path and os.path.exists(path):
+                    self.tracker.start(boxes, open(path, "rb").read(), active=lambda: bool(self.look.get("open")))
+            except Exception as e:
+                print("[look] tracker not started:", type(e).__name__, str(e)[:60], flush=True)
 
     def _look_command(self, cmd, text, turn, T):
         op = cmd["op"]
         say = ""
+        self._route_name = "look:" + op
         if op == "clear":
             self.look["boxes"], self.look["sel"] = [], None
             opener.NOTIFY({"t": "look", "op": "boxes", "boxes": []}); say = "Boxes cleared."
@@ -1651,6 +1896,12 @@ class Assistant:
             opener.NOTIFY({"t": "look", "op": "live", "stream": "/api/look/stream" if self.look["source"] == "phone camera" else None}); say = "Live."
         elif op == "close":
             self.look_close(); say = "Closed."
+        elif op in ("drop", "keep", "keepn"):
+            say = self._look_subset(cmd)
+        elif op == "connected":
+            g = getattr(self, "_guide", None)
+            g and g.confirm()
+            say = "Good. Verify before powering." if g and g.electronics else "Good, connected."
         elif op == "select":
             n = cmd["n"] if cmd["n"] > 0 else len(self.look["boxes"])
             if not 1 <= n <= len(self.look["boxes"]):
@@ -1659,6 +1910,30 @@ class Assistant:
                 self.look_select(n - 1, speak=cmd.get("speak", False))
                 say = "" if cmd.get("speak") else f"{self.look['boxes'][n - 1]['name'].capitalize()}."
         self._answer_local(text, {"speech": say} if say else {"speech": ""}, turn, T)
+
+    def _look_subset(self, cmd):
+        """Selective highlights without a new look: "stop highlighting the phone" (drop), "highlight just the charger" / "highlight the second one" (keep). The kept boxes stay where the tracker has them now."""
+        boxes = list(self.look.get("boxes") or [])
+        tk = getattr(self, "tracker", None)
+        cur = tk.current() if tk else []                                       # the tracker's live positions, same order as the boxes
+        if len(cur) == len(boxes):
+            boxes = [dict(b, x=c["x"], y=c["y"], w=c["w"], h=c["h"]) for b, c in zip(boxes, cur)]
+        what = cmd.get("what", "")
+        if cmd["op"] == "keepn":
+            n = cmd["n"] if cmd["n"] > 0 else len(boxes)
+            idx = [n - 1] if 1 <= n <= len(boxes) else []
+            if not idx:
+                return "There is no box " + str(n) + "."
+        else:
+            hit = [i for i, b in enumerate(boxes) if look.names_match(what, b.get("name", ""))]
+            if not hit:
+                return f"I am not highlighting a {what}."
+            idx = hit if cmd["op"] == "keep" else [i for i in range(len(boxes)) if i not in hit]
+        self.look["boxes"], self.look["sel"] = [boxes[i] for i in idx], None
+        opener.NOTIFY({"t": "look", "op": "boxes", "boxes": self.look["boxes"]})
+        if tk:
+            tk.retain(idx) if idx else tk.stop()
+        return "Highlights cleared." if not idx else ("Just the " + what + "." if cmd["op"] != "drop" else "Stopped highlighting the " + what + ".")
 
     def look_select(self, i, speak=False):
         """Tap or voice select: highlight the box and fill its info card with a short description from the brain (shown, and spoken when asked by voice)."""
@@ -1682,7 +1957,44 @@ class Assistant:
                 self.say(r)
         threading.Thread(target=go, daemon=True).start()
 
+    def _wiring_context(self):
+        """The newest project's parts list (and the Pi header facts) for "check wiring"; says plainly when there is none."""
+        try:
+            from . import projects
+            ps = projects.list_projects()
+            if ps:
+                pl = ps[0]
+                return f'{pl["name"]}. Parts: ' + "; ".join(str(x) for x in (pl.get("plan") or {}).get("parts", [])[:20] if x)[:600] if isinstance(pl.get("plan"), dict) else pl["name"]
+        except Exception:
+            pass
+        return "no saved project (so just describe what you can see and say what you cannot verify)"
+
+    def _connect_start(self, reply, shown):
+        """The brain located the two spots: follow both on the live view and guide step by step. Anything unclear is said plainly, nothing is guessed."""
+        from . import connect, track
+        res = connect.validate(connect.extract(reply))
+        if res[0] != "ok":
+            if res[0] in ("missing", "mains") and res[1]:
+                self.say(res[1])
+            return
+        _, a, b, say = res
+        if say:
+            self.say(say)
+        if not (self.look.get("path") and os.path.exists(self.look["path"])):
+            return
+        if not hasattr(self, "tracker"):
+            self.tracker = track.Tracker(opener.NOTIFY)
+        names = (a["name"] + " " + b["name"]).lower()
+        electronics = bool(re.search(r"\b(?:gpio|pin|jumper|wire|breadboard|arduino|pi|esp32)\b", names))
+        self._guide = connect.Guide(self.say, opener.NOTIFY, electronics=electronics)
+        self.tracker.on_out = self._guide.feed
+        self.tracker.start([a, b], open(self.look["path"], "rb").read(), active=lambda: bool(self.look.get("open")) and not self._guide.done, quiet=True)
+        if electronics:
+            self.on_msg("sys", "Verify before powering.")
+
     def look_close(self):
+        if getattr(self, "tracker", None):
+            self.tracker.stop()
         self.look.update(open=False, live=False, boxes=[], sel=None)
         opener.NOTIFY({"t": "look", "op": "close"})
 
@@ -1942,6 +2254,24 @@ class Assistant:
 
     def run_mac(self, payload):
         """Send a link or file to the Mac (signed). Never prints the code, topic or key."""
+        path = payload.get("file") or payload.get("share")
+        if path:
+            from . import fileshare                                  # the same file rules as every other send: no keys, tokens, settings, history, nothing outside home or Jarvis's own folder
+            try:
+                fileshare.check_source(path)
+            except fileshare.Refused as e:
+                self.say(str(e)[:140])
+                return {"ok": False, "message": str(e)}
+        if path:                                                     # the silent Mac helper first: it saves into ~/Downloads/Jarvis and the Go says so ONLY after it confirms size and hash
+            from . import machelper
+            if machelper.status() in ("ready", "busy"):
+                sv = machelper.save_file(str(path))
+                if sv["ok"]:
+                    sounds.play("delivered")
+                    outbox.log("mac", sv["name"], "delivered", payload=payload)
+                    self.say(("Saved in the Quarantine folder, not opened: " if sv.get("quarantined") else "Saved to your Mac's Downloads: ") + sv["name"][:60])
+                    return {"ok": True, "message": "saved by the helper", "label": sv["name"]}
+                self.on_msg("sys", "The Mac helper did not confirm the save (" + str(sv.get("why"))[:60] + "): using the other way.")
         r = mac.send(payload)
         print("[mac]", r["message"], flush=True)
         lbl = str(r.get("label") or payload.get("url") or os.path.basename(str(payload.get("file") or "")) or "item")[:70]
@@ -1969,7 +2299,11 @@ class Assistant:
             link = opener.EMBED.get("page_url")
             payload = {"title": "From Jarvis", "message": (self.recent[-1][1] if self.recent else "")[:300], "link": link}
         if payload.get("file"):
-            r = phone.send_file(payload["file"], payload.get("title", "From Jarvis"), payload.get("message", ""), payload.get("link"))
+            done_say = lambda name, size: self._phone_downloaded(name, size, payload)
+            r = phone.send_download(payload["file"], payload.get("title", "From Jarvis"), on_complete=done_say)
+            if r.get("ok"):
+                self._watch_phone_download(r["sid"], r["name"], payload)
+                self.say("Sent. Tap the notification to save it to Downloads.")
         else:
             r = phone.send(payload)
         print("[phone]", r["message"], flush=True)
@@ -1988,6 +2322,32 @@ class Assistant:
         else:
             self.on_msg("sys", "Could not send to your phone: " + r["message"])
         return r
+
+    def _phone_downloaded(self, name, size, payload):
+        """Called by the file server ONLY when every byte of the file has been served to the phone."""
+        outbox.log("phone", f"{name}", "downloaded", f"the phone fetched all {size} bytes: Files > Downloads", payload=None)
+        self.say(f"Your phone downloaded {name}: Files, Downloads.")
+        extras.log_event("phone downloaded a file", name[:60])
+
+    def _watch_phone_download(self, sid, name, payload):
+        """Honest follow-up: if the whole file has not been fetched after a few minutes, say so plainly (the link only works on the home Wi-Fi). Asks once about Tailscale."""
+        from . import fileshare
+        def watch():
+            time.sleep(180)
+            if fileshare.proof(sid).get("complete"):
+                return
+            pr = fileshare.proof(sid)
+            partial = pr.get("served", 0) > 0
+            line = (f"The download of {name} did not finish. Tap the notification again within ten minutes, on your home Wi-Fi." if partial else
+                    f"Sent, not opened yet: {name}. The link only works while your phone is on the home Wi-Fi.")
+            self.on_msg("sys", line)
+            outbox.log("phone", name, "sent", "not opened yet" if not partial else "partly downloaded", payload=None)
+            if not settings.get("tailscale_asked"):
+                settings.update(tailscale_asked=True)
+                self.say(line + " Do you want to set up Tailscale so it also works away from home? Say yes or no; I won't install anything without your yes.")
+            else:
+                self.say(line)
+        threading.Thread(target=watch, daemon=True).start()
 
     def run_volume(self, v):
         """Fixed wpctl commands only (the numbers are clamped); never text from the model."""
@@ -2228,7 +2588,7 @@ class Assistant:
                 opener.NOTIFY({"t": "heard", "text": text[:140], "route": ""})                 # the small "heard: ..." line, so a wrong guess is easy to spot
             hint = False
             if conv:
-                if not text:                                            # nothing recognised: close quietly
+                if not text or convo.is_noise(text):                    # nothing recognised (or only what a recogniser invents from room noise): close quietly
                     self.conversation_end(); self._set("idle"); return
                 if convo.is_signoff(text) and not self.translate_to:    # "no thanks", "that's all", "thanks"... (in translate mode they are translated like anything else)
                     self._signoff(text, turn); return
@@ -2240,6 +2600,25 @@ class Assistant:
                 if exp and exp["kind"] == "mkt_pick":
                     r2 = markets.validate_route({"intent": exp["text"] or "pull_up", "name": text})
                     self._answer_local(text, mktdesk.answer(r2, text) if r2 else {"speech": "I didn't catch which one."}, turn, T)
+                    return
+                if exp and exp["kind"] == "sys_confirm":
+                    from . import sysctl
+                    d = json.loads(exp["text"] or "{}")
+                    if re.match(r"\s*(?:yes|yeah|yep|sure|ok|okay|confirm|do it|go ahead)\b", text, re.I) and d.get("op") in sysctl.CONFIRM:
+                        ok, say = sysctl.run(d["op"], None, True)
+                        self._answer_local(text, {"speech": say}, turn, T)
+                        if ok:
+                            time.sleep(0.2)
+                    else:
+                        self._answer_local(text, {"speech": "Okay, cancelled."}, turn, T)
+                    return
+                if exp and exp["kind"] == "vault_ok":
+                    from . import vault
+                    d = json.loads(exp["text"] or "{}")
+                    if re.match(r"\s*(?:yes|yeah|yep|sure|ok|okay|please|save it|go ahead)\b", text, re.I) and d.get("text"):
+                        self._answer_local(text, {"speech": vault.remember(d["text"], confirmed=True)["speech"]}, turn, T)
+                    else:
+                        self._answer_local(text, {"speech": "Okay, I won't save it."}, turn, T)
                     return
                 if exp and exp["kind"] == "model_ok":
                     d = json.loads(exp["text"] or "{}")
@@ -2340,6 +2719,9 @@ class Assistant:
                 if tour and re.fullmatch(r"(?:please )?(?:go back|back|previous|again)", low3):
                     tour["jump"] = -1; self.speaker.stop(); self.on_msg("you", text); self._set("idle"); return
                 cmd3 = holo.parse_control(text, h3["spec"]["parts"])
+                if cmd3 and cmd3["op"] in ("explode", "isolate", "hide", "select") and h3["spec"].get("real") and len(h3["spec"]["parts"]) <= 1 and cmd3["op"] != "select":
+                    self._answer_local(text, {"speech": "This model is one scanned or photographed piece, so it cannot be pulled apart: a fake split would look broken. Only models made of separate parts can explode."}, turn, T)
+                    return
                 if cmd3:
                     if cmd3["op"] == "close":
                         opener.NOTIFY({"t": "holo", "op": "close_card"})
@@ -2380,10 +2762,12 @@ class Assistant:
                     return
                 lowc = re.sub(r"[^a-z' ]", "", text.lower()).strip()
                 if re.fullmatch(r"(?:please )?(?:turn on|switch on|start|open|show|activate|enable|put on)(?: up)?(?: the| my)?(?: phone)? (?:camera|cam)(?: please)?", lowc):
+                    self._route_name = "look:camera_on"
                     self._answer_local(text, {"speech": "Camera on."}, turn, T)
                     threading.Thread(target=self.camera_on, daemon=True).start()
                     return
                 if re.fullmatch(r"(?:please )?(?:turn off|switch off|stop|close|shut|disable|hide|turn)(?: down)?(?: the| my)?(?: phone)? (?:camera|cam)(?: off)?(?: please)?", lowc):
+                    self._route_name = "look:close"
                     self._answer_local(text, {"speech": "Camera off."}, turn, T)
                     self.look_close()
                     return
@@ -2408,20 +2792,24 @@ class Assistant:
                 self._remember_label = lm["label"] or "something"
                 text = "what do you see"                                        # a fresh look; the result is saved below
             if text and not shot and not self.translate_to:
-                cmd = look.parse_command(text, self.look)
-                if cmd and cmd["op"] != "box":                                    # clear / freeze / live / close / select: no brain needed (select can speak)
+                cmd = look.parse_command(text, dict(self.look, guide=bool(getattr(getattr(self, "_guide", None), "done", True) is False)))
+                if cmd and cmd["op"] not in ("box", "mode"):                      # clear / freeze / live / close / select: no brain needed (select can speak)
                     self._look_command(cmd, text, turn, T)
                     return
-                fresh = look.is_fresh(text) or (cmd and cmd["op"] == "box")
+                fresh = look.is_fresh(text) or (cmd and cmd["op"] in ("box", "mode"))
                 self._look_text = text
                 if fresh or self.look["open"]:                                    # "look at this", "what do you see", "box the cup", or any question while the LOOK view is open
                     focus = (cmd or {}).get("what") if cmd else None
+                    _wo = bool(self.look["open"])
+                    opener.NOTIFY({"t": "heard", "text": text[:140], "route": "look:" + ((cmd or {}).get("op") or "fresh") + ((":" + cmd["mode"]) if cmd and cmd.get("mode") else "")})
                     try:
-                        shot = self._look_frame(retake=bool(fresh and not (self.look["open"] and not look.FRESH.search(text) and not cmd)))
+                        shot = self._look_frame(retake=bool(fresh and not (self.look["open"] and not look.FRESH.search(text) and not cmd)), camera_only=bool(cmd and cmd.get("op") == "mode"))        # connect / read / count / measure / wiring need a real camera, never a desktop screenshot
                     except Exception as e:
-                        self._answer_local(text, {"speech": "I couldn't get a picture: " + str(e)[:80]}, turn, T)
+                        why = str(e)
+                        why = "the screenshot tool did not work" if re.match(r"Command |\[|/", why) or "'" in why[:12] else why[:80]        # never read a command line or a file path aloud
+                        self._answer_local(text, {"speech": "I couldn't get a picture: " + why}, turn, T)
                         return
-                    lookq = {"fresh": bool(fresh), "focus": focus}
+                    lookq = {"only": bool(cmd and cmd.get("only")), "fresh": bool(fresh), "focus": focus, "mode": (cmd or {}).get("mode"), "what": (cmd or {}).get("what", ""), "was_open": _wo}
                     skip_local = True
             if text and not shot and not skip_local:
                 from . import daylog
@@ -2445,17 +2833,29 @@ class Assistant:
                     return
             if text and not shot and not net.online():                    # offline: known within ~1.2 s; say so ONCE, answer small talk, and never show an error
                 self.offline_changed(True, "net", speak=False)
+                self._route_name = "brain"
                 self._answer_local(text, offline.handle(text, personas.PERSONAS[self.persona]["name"]), turn, T)
                 return
             question = text or "What is on my screen right now? Describe it briefly."
             if lookq:
                 sel = self.look["sel"]
                 selt = (f"The user selected box {sel + 1}: {self.look['boxes'][sel]['name']} at x={self.look['boxes'][sel]['x']}, y={self.look['boxes'][sel]['y']}, w={self.look['boxes'][sel]['w']}, h={self.look['boxes'][sel]['h']}. " if sel is not None and sel < len(self.look["boxes"]) else "")
-                question = (look.PROMPT + (look.FOCUS.format(what=lookq["focus"]) if lookq["focus"] else "") if lookq["fresh"] and not self.look["open"] or lookq["focus"] else look.PROMPT_FOLLOW.format(sel=selt)) + question
+                mode = lookq.get("mode")
+                if mode:
+                    from . import connect as _connect
+                    mp = _connect.PROMPT if mode == "connect" else look.MODE_PROMPTS[mode].replace("{what}", self._wiring_context() if mode == "wiring" else lookq.get("what", ""))
+                    self._look_mode = mode
+                else:
+                    self._look_mode = None
+                base = look.ONLY.format(what=lookq["focus"]) if lookq.get("only") and lookq.get("focus") and not mode else mp if mode else (look.PROMPT + (look.FOCUS.format(what=lookq["focus"]) if lookq["focus"] else "") if lookq["fresh"] and not self.look["open"] or lookq["focus"] else look.PROMPT_FOLLOW.format(sel=selt))
+                question = base + question
             asked = question
             if self._carry:
                 question, self._carry = self._carry + question, ""
-            question = skills.context_line() + memory.context(asked) + (continuity.context() if continuity.is_resume(asked) else "") + question   # date/time + home area, plus the few remembered facts that match this question
+            from . import context as _ctx
+            question = _ctx.build(asked, self) + (continuity.context() if continuity.is_resume(asked) else "") + question
+            if _ctx.LAST["notes"]:
+                opener.NOTIFY({"t": "notes", "titles": _ctx.LAST["notes"][:3]})                  # "From your notes: ..." under the answer   # date/time + home area, plus the few remembered facts that match this question
             if self.translate_to and text:                                       # translate mode: just the translation, nothing else
                 question = f"Translate the following into {self.translate_to}. Reply with ONLY the translation: no quotes, no notes, no English.\n{text}"
             if hint:
@@ -2465,7 +2865,7 @@ class Assistant:
             self._set("thinking")
             self._timing, self._played_gen = T, None
             gen = self.speaker.begin()
-            if lookq and getattr(self, "last_source", ""):                   # tell me which one it used: out loud (and the LOOK view shows it)
+            if lookq and getattr(self, "last_source", "") and not lookq.get("was_open"):                   # tell me which one it used: out loud (and the LOOK view shows it)
                 self.speaker.add({"phone camera": "Looking through the phone camera.", "USB camera": "Looking through the USB camera.", "screenshot of the desktop": "Looking at your desktop."}.get(self.last_source, ""), gen)
             sents = Sentences()
 
@@ -2549,11 +2949,20 @@ class Assistant:
                 self.speaker.add(s, gen)
             shown, cards, open_act, phone_act, mac_act = split_reply_full(reply)
             shown = moods.strip(shown)
-            if lookq is not None:
+            from . import unknown as _unk
+            if _unk.reply_is_unsure(shown) and text:
+                _unk.log(text, "model unsure")                                  # the pattern list: fix the pattern, not the single phrase
+                if len(shown.split()) < 25 and "try:" not in shown.lower():
+                    shown = shown.rstrip() + " " + _unk.CAN_DO
+            if lookq is not None and lookq.get("mode") == "connect":
+                self._connect_start(reply, shown)
+            elif lookq is not None:
                 rawb = look.extract(reply)
                 boxes = look.validate_boxes(rawb)
                 print(f"[look] brain returned {len(rawb) if rawb is not None else 'no'} boxes, {len(boxes)} valid", flush=True)
                 self._look_show(boxes, shot)
+                if self.look.get("snap"):
+                    opener.NOTIFY({"t": "look", "op": "snapshot", "src": "/shot/" + self.look["snap"], "text": (shown or "")[:400]})
                 if getattr(self, "_remember_label", None) and shot:
                     ent = lookmem.remember(shot, self._remember_label, [b["name"] for b in boxes], shown)
                     self._remember_label = None
@@ -2603,6 +3012,8 @@ class Assistant:
             T.mark("done")
             extras.HISTORY.append(dict(T.marks)); del extras.HISTORY[:-20]
             line = T.line()
+            from . import perf
+            perf.from_timing(T.marks, False)
             print("TIMING", line, flush=True)
             self.on_msg("sys", "⏱ " + line)
             if self.on_timing:
@@ -2616,6 +3027,7 @@ class Assistant:
                 why = "net" if not net.online() else "brain"
                 self.offline_changed(True, why, speak=False)             # not an error screen: say it once, keep the local skills
                 try:
+                    self._route_name = "brain"
                     self._answer_local(text, offline.handle(text or "", personas.PERSONAS[self.persona]["name"]), turn, T)
                     return
                 except Exception:

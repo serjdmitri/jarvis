@@ -40,6 +40,8 @@ MAX_BACKOFF_S = 2.5               # (the duty-cycle budget below is the real CPU
 GUARD_S = 0.8                    # stay deaf this long after the assistant stops talking
 RING_S = 4.0                     # rolling buffer
 CHIME_GRACE_S = 0.14             # while the chime plays the frames are kept but not counted as speech/silence
+WINDOW_MARGIN_S = 0.45            # the follow-up window ignores this long after the last word (the room echo of Jarvis's own voice)
+WINDOW_MIN_SPEECH = 10            # frames (0.3 s) of real speech before a follow-up counts (a cough or a door is not a command)
 CONV_MARGIN_S = 0.0              # conversation mode: ignore this long after the assistant's last word (its own voice tail)
 PREROLL_S = 0.5                  # keyword path: keep this much audio from before it fired (fast continuations)
 
@@ -65,6 +67,9 @@ def match_wake(text, name):
         if not _like(tok, name):
             continue
         before, after = toks[:i], toks[i + 1:]
+        a0 = " ".join(after)
+        if re.fullmatch(r"(?:please )?(?:wake up|wakeup|wake)(?: please)?|(?:are )?you (?:there|awake|up)", a0) and (not before or before[-1] in ("hey", "hi", "hello", "ok", "okay", "yo")):
+            return ("wakeup", "")                                   # "hey Jarvis wake up", "Jarvis wake up": just wake, no brain question
         if before and before[-1] in ("hey", "hi", "hello", "ok", "okay", "yo"):
             return ("hey", " ".join(after))
         if len(before) >= 2 and before[-2:] == ["wake", "up"]:
@@ -323,6 +328,8 @@ class HandsFree:
             tm["t_chime"] = time.time(); a.say(p["welcome_home"]); tm["t_ready"] = time.time()
             self._log(tm); return
         a.on_msg("sys", f"[wake] {kind}")
+        if a.maybe_morning_brief():                             # the first wake of the day, if you switched the morning brief on
+            return
         if kind == "awake":                                     # a spoken reply first, then listen
             def reply():
                 a.say(random.choice(p["awake"]), wait=True)
@@ -409,14 +416,14 @@ class HandsFree:
         tm["t_ready"] = time.time(); tm["preroll_s"] = len(pre) * FRAME / RATE
         self._log(tm)
 
-    def open_conversation(self, tts_end, wait=None):
+    def open_conversation(self, tts_end, wait=None, window=False):
         """Conversation mode: the mic opens the moment the assistant stops talking, with no wake word. Audio from just after its
         last word is already in the rolling buffer, so a quick reply is not lost."""
         a = self.a
         if self.stop_evt.is_set() or a.muted:
             return False
         now = time.time()
-        since = (tts_end or now) + CONV_MARGIN_S               # skip the tail of the assistant's own voice
+        since = (tts_end or now) + (WINDOW_MARGIN_S if window else CONV_MARGIN_S)               # skip the tail of the assistant's own voice (the speaker's echo in the room)
         pre = [f for (t, f) in list(self.ring) if t >= since]
         noise, speech, silence = self.noise, 0, 0
         thr = max(noise + 10.0, -48.0)
@@ -425,9 +432,13 @@ class HandsFree:
                 speech += 1; silence = 0
             else:
                 silence += 1
-        audio.soft_tone()
+        if not window:
+            audio.soft_tone()
         self.cap = {"clip": pre, "speech": speech, "silence": silence, "t0": now, "lvl": 0.0, "hist": deque(maxlen=60), "noise": noise,
-                    "grace_until": now + CHIME_GRACE_S, "conv": True, "wait": wait or CMD_START_TIMEOUT_S}
+                    "grace_until": now + CHIME_GRACE_S, "conv": True, "wait": wait or CMD_START_TIMEOUT_S, "window": bool(window)}
+        if window:                                              # the follow-up window: a quiet countdown ring, no tone
+            from . import opener
+            opener.NOTIFY({"t": "window", "on": True, "secs": int(wait or 0)})
         a._set("recording", "conversation")
         print(f"[conv] mic open {now - (tts_end or now):.2f}s after the assistant stopped speaking | kept {len(pre) * FRAME / RATE:.2f}s of audio from just after its last word", flush=True)
         return True
@@ -435,11 +446,14 @@ class HandsFree:
     def _capture_frame(self, f, db, now):
         a, c = self.a, self.cap
         c["clip"].append(f); c["hist"].append(db)
+        if c.get("window") and a.speaker.busy():                # Jarvis started talking again (a reminder, a timer): that is not the user; the window waits and its clock stops
+            c["t0"] += FRAME / RATE; c["clip"] = []; c["speech"] = c["silence"] = 0
+            return
         if now < c["grace_until"]:                              # the chime/tone is playing: keep the audio, do not count it as speech or silence
             return
         if len(c["hist"]) > 15:
             c["noise"] = float(np.percentile(c["hist"], 20))
-        loud = db > max(c["noise"] + 10.0, -48.0)
+        loud = db > max(c["noise"] + (13.0 if c.get("window") else 10.0), -46.0 if c.get("window") else -48.0)       # the window is stricter: a TV or a room full of talk should not look like a command
         if now - c["lvl"] > .05:
             a.on_level("mic", min(1.0, max(0.0, (db + 55) / 35)), db); c["lvl"] = now
         if loud:
@@ -447,14 +461,17 @@ class HandsFree:
         else:
             c["silence"] += 1
         el = now - c["t0"]
-        if c["speech"] == 0 and el > c.get("wait", CMD_START_TIMEOUT_S):
+        if (c["speech"] == 0 or (c.get("window") and c["speech"] < WINDOW_MIN_SPEECH and c["silence"] > 15)) and el > c.get("wait", CMD_START_TIMEOUT_S):
             conv, self.cap = c.get("conv"), None
+            if c.get("window"):
+                from . import opener
+                opener.NOTIFY({"t": "window", "on": False})
             if conv:                                            # nothing said for ~6 s: close quietly, back to wake-word listening
                 a._set("idle"); a.conversation_end()
             else:
                 a.on_msg("sys", "(no request heard)"); a._set("idle")
             return
-        if (c["speech"] >= 8 and c["silence"] * FRAME / RATE >= PATIENCE.get(settings.get("listen_patience"), PATIENCE["fast"])[0 if c["speech"] >= 20 else 1]) or el > CMD_MAX_S:
+        if (c["speech"] >= (WINDOW_MIN_SPEECH if c.get("window") else 8) and c["silence"] * FRAME / RATE >= PATIENCE.get(settings.get("listen_patience"), PATIENCE["fast"])[0 if c["speech"] >= 20 else 1]) or (el > CMD_MAX_S and not (c.get("window") and c["speech"] < WINDOW_MIN_SPEECH) and (not c.get("window") or el > c.get("wait", 0) + CMD_MAX_S - 5)):
             data, self.cap = np.concatenate(c["clip"]), None
             if self.spotter:
                 self.spotter.reset()                            # fresh context after a request
@@ -463,6 +480,9 @@ class HandsFree:
                 with wave.open(f"/tmp/jarvis-wake-{int(time.time())}.wav", "wb") as w:
                     w.setnchannels(1); w.setsampwidth(2); w.setframerate(RATE); w.writeframes(data.tobytes())
             conv = bool(c.get("conv"))
+            if c.get("window"):
+                from . import opener
+                opener.NOTIFY({"t": "window", "on": False})
             a.submit_audio(endpoint_trim(data), strip_wake=not conv, conv=conv)
 
     # -- timing report ----------------------------------------------------------------

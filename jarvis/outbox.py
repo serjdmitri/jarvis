@@ -131,6 +131,11 @@ def resolve(a, what, to):
         u = spotify_cli.now_url()
         return {"kind": "url", "value": u, "label": "the song"} if u else None
     def page():
+        from . import maps
+        sp = maps.SPECS.get(maps.LAST_SPEC["id"]) if maps.LAST_SPEC["id"] and time.time() - maps.LAST_SPEC["t"] < 3600 else None
+        if to == "phone" and sp and sp.get("dest"):                              # the directions: an Apple Maps link opens in Maps on the iPhone
+            o, d = sp.get("origin"), sp["dest"]
+            return {"kind": "url", "value": maps.apple_link((o["lat"], o["lon"]) if o else None, (d["lat"], d["lon"]), sp.get("mode", "car")), "label": "the directions to " + str(d.get("label", "there"))[:40]}
         u = opener.EMBED.get("page_url") or video.LAST.get("url")
         return {"kind": "url", "value": u, "label": ("the video" if video.LAST.get("url") == u else "the page")} if u else None
     def report():

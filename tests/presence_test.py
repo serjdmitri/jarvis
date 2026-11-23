@@ -28,7 +28,7 @@ time.sleep(5.0)
 rec("no motion for the timeout -> away", presence.STATE["present"] is False, str(events))
 cur["frame"] = B; time.sleep(1.0)
 rec("motion again -> back (False -> True)", events[-1] == (True, False), str(events))
-presence.pause(True); n = presence.STATE["frames"]; cur["frame"] = A; time.sleep(1.5)
+presence.pause(True); time.sleep(0.4); n = presence.STATE["frames"]; cur["frame"] = A; time.sleep(1.5)
 rec("paused: no frames processed", presence.STATE["frames"] == n)
 presence.pause(False)
 cpu = (time.process_time() - c0) / (time.time() - t0) * 100

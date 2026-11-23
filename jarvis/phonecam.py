@@ -138,7 +138,7 @@ def grab(url=None, timeout=4, frames=8):
         raise RuntimeError("No phone camera address is set. Open SETTINGS > PHONE CAMERA.")
     config.SHOTS_DIR.mkdir(exist_ok=True)
     if not url or u == get_url():                                      # the saved camera: one shared connection, never a second viewer
-        data = RELAY.frame(wait=max(timeout, 6))
+        data = RELAY.snapshot(wait=max(timeout, 6))[0] if RELAY.running() else RELAY.frame(wait=max(timeout, 6))     # live already: the frame of this moment
         path = str(config.SHOTS_DIR / f"shot-{int(time.time() * 1000)}.jpg")
         with open(path, "wb") as f:
             f.write(data)
@@ -225,7 +225,8 @@ class Relay:
         except Exception as e:
             self.err = "could not read the phone's video (" + type(e).__name__ + ")"
         finally:
-            self.thread = None
+            if self.thread is threading.current_thread():              # only clear our own slot: a newer reader (after an address change) must not be orphaned
+                self.thread = None
 
     def want(self, seconds=8):
         """Make sure the reader runs for at least `seconds` more (a consumer holds it open longer)."""
@@ -259,9 +260,26 @@ class Relay:
             raise RuntimeError(self.err or "timed out waiting for the phone's video")
         return max(got, key=lambda b: _sharp_bytes(b))
 
+    def snapshot(self, wait=6.0, min_frames=3):
+        """A COPY of the newest frame at this moment, no waiting for a sharper one, no second connection: (jpeg bytes, frame number, time). Frames are immutable bytes, so the live view never touches it."""
+        self.want(wait + 4)
+        t0 = time.time()
+        while time.time() - t0 < wait:
+            with self.lock:
+                n, f, t = self.n, self.latest, self.t
+            if f and n >= min_frames:
+                return f, n, t
+            if self.err and not f:
+                break
+            time.sleep(0.03)
+        raise RuntimeError(self.err or "timed out waiting for the phone's video")
+
+    def running(self):
+        return bool(self.thread and self.thread.is_alive() and self.latest is not None and time.time() - self.t < 3)
+
     def hold(self):
+        self.want(8)                                                   # may raise (no address): count the consumer only after it worked, or the camera would stay on
         self.consumers += 1
-        self.want(8)
 
     def release(self):
         self.consumers = max(0, self.consumers - 1)

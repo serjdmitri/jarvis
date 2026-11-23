@@ -11,12 +11,12 @@ from . import config, prefs, settings
 
 SCHEMA = 2
 SECRET = re.compile(r"key|token|secret|topic|password|passcode|code|contact|spotify_client", re.I)
-BOOLS = {"auto_visuals", "chimes", "feelings", "auto_promises", "auto_3d", "markets_desk", "boot_anim", "camera_warnings", "keep_phone_photos", "stay_out", "clock24", "clock_seconds", "machine_warnings",
+BOOLS = {"osk", "morning_brief_wake", "auto_visuals", "chimes", "feelings", "auto_promises", "auto_3d", "markets_desk", "boot_anim", "camera_warnings", "keep_phone_photos", "stay_out", "clock24", "clock_seconds", "machine_warnings",
          "term_wake", "phone_voice", "show_heard", "large_text", "high_contrast", "whisper", "whisper_auto", "auto_persona", "say_switching", "desk_presence", "welcome_speak", "welcome_card", "daylog",
          "silent", "lite"}
 CHOICES = {"units": ("metric", "imperial"), "listen_patience": ("fast", "normal", "patient"), "typebox_key": ("alt", "ctrl", "both", "off"), "music_pref": ("youtube", "spotify"),
            "orb_avoid": ("top-right", "top-left", "bottom-left", "bottom-right", "none")}
-NUMS = {"volume": (0, 100), "chime_volume": (0, 100), "idle_minutes": (0, 60), "memory_days": (0, 3650), "share_cap_mb": (1, 5000)}
+NUMS = {"spotify_volume_max": (10, 100), "listen_window": (0, 30), "volume": (0, 100), "chime_volume": (0, 100), "idle_minutes": (0, 60), "memory_days": (0, 3650), "share_cap_mb": (1, 5000)}
 STRS = {"home_area", "persona", "theme", "whisper_from", "whisper_to", "notify_quiet_from", "notify_quiet_to", "brief_morning", "brief_afternoon", "brief_night"}
 EXPORT_DIR = config.ROOT / "exports"
 

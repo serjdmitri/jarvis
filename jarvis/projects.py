@@ -22,9 +22,11 @@ def _load():
 
 def _save(d):
     config.DATA.mkdir(parents=True, exist_ok=True)
-    fd = os.open(FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    tmp = str(FILE) + ".tmp"                                            # written aside and swapped in: a crash can never leave a half-empty file
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(d, f)
+    os.replace(tmp, FILE)
 
 
 NUMW = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "ten": 10}
@@ -60,7 +62,8 @@ def add_to_bin(text):
 def remove_from_bin(name):
     d = _load()
     n0 = len(d.get("bin", []))
-    d["bin"] = [x for x in d.get("bin", []) if name.lower().strip() not in x["name"]]
+    w = name.lower().strip()
+    d["bin"] = [x for x in d.get("bin", []) if not re.search(r"\b" + re.escape(w) + r"\b", x["name"])]      # whole words only: "led" does not remove "oled display"
     _save(d)
     return n0 - len(d["bin"])
 
@@ -137,7 +140,7 @@ def forget_all():
 def parse_command(text):
     low = re.sub(r"\s+", " ", text.lower().strip(" .?!"))
     m = re.fullmatch(r"(?:please )?(?:i have|i've got|i own|i got) (.+)", low)
-    if m and not re.search(r"\b(?:a question|to go|to leave|no idea|to say)\b", m.group(1)) and re.search(r"raspberry|arduino|servo|sensor|breadboard|resistor|led|motor|wire|battery|board|esp|multimeter|solder|cable|display|camera|relay|jumper|capacitor|transistor", m.group(1)):
+    if m and not re.search(r"\b(?:a question|to go|to leave|no idea|to say)\b", m.group(1)) and re.search(r"\b(?:raspberry|arduino|servo|sensor|breadboard|resistors?|leds?|motors?|wires?|batter(?:y|ies)|boards?|esp\d*|multimeter|solder(?:ing)?|cables?|displays?|cameras?|relays?|jumpers?|capacitors?|transistors?)\b", m.group(1)):
         return {"kind": "have", "text": m.group(1)}
     m = re.fullmatch(r"(?:please )?add (.+?) to my (?:parts|parts bin|bin|inventory)", low)
     if m:
@@ -155,6 +158,6 @@ def parse_command(text):
     if re.fullmatch(r"(?:please )?(?:what|which) projects do i have|(?:please )?(?:show|list|open) my projects", low):
         return {"kind": "list"}
     m = re.fullmatch(r"(?:please )?(?:continue|open|resume|show) my (.+?)(?: project)?", low)
-    if m and m.group(1) not in ("projects", "parts", "list", "notes", "timers", "music", "day", "today"):
+    if m and m.group(1) not in ("projects", "parts", "list", "notes", "timers", "music", "day", "today") and get_project(m.group(1)):      # only a project you really saved ("open my email" is not one)
         return {"kind": "open", "name": m.group(1)}
     return None

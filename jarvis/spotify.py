@@ -15,7 +15,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 REDIRECT = "http://127.0.0.1:8888/callback"
-SCOPES = "user-read-playback-state user-modify-playback-state user-read-currently-playing streaming playlist-read-private"
+SCOPES = "user-read-playback-state user-modify-playback-state user-read-currently-playing streaming playlist-read-private user-library-read"
 AUTH, TOKEN, API = "https://accounts.spotify.com/authorize", "https://accounts.spotify.com/api/token", "https://api.spotify.com/v1"
 DEVICE_NAME = "Jarvis"
 TEST_TRACK = "spotify:track:11dFghVXANMlKmJXsNCbNl"
@@ -84,8 +84,11 @@ def explain(err, status=None):
     for k, v in table:
         if k in e:
             return v
-    if status in (401, 403):
-        return "Spotify refused the request (sign-in or app rules, code %s). Spotify has been changing its developer rules." % status
+    if status == 403:
+        return ("Spotify said no (403). Since February 2026 an app in development mode needs its owner to have Premium, and only people added under the app's User Management (up to 5) may use it: "
+                "add your own Spotify email there.")
+    if status == 401:
+        return "Spotify refused the login (it may have expired). Run the login step again. (code 401)"
     if status == 429:
         return "Spotify says too many requests right now. Try again in a minute."
     return "Spotify did not accept that (%s). Music stays on YouTube." % (status or "network problem")
@@ -212,16 +215,53 @@ def find_device():
     for d in j.get("devices", []):
         if d.get("name") == DEVICE_NAME:
             return d, "Found the device called Jarvis."
-    return None, ("No device called Jarvis yet. Spotify plays through a small player program on the Go (spotifyd or librespot) named Jarvis, and it is not running. "
-                  "It is not installed by me without your OK. Once installed and named Jarvis, press this again. Until then music stays on YouTube.")
+    from . import spotifyd
+    st = spotifyd.state()
+    if not st["installed"]:
+        return None, spotifyd.not_installed()
+    if not st["active"]:
+        return None, "The Jarvis player is installed but not running. Press CHECK again and I will start it."
+    return None, ("The Jarvis player is running but Spotify cannot see it yet. Open the Spotify app on your Mac or iPhone, tap the speaker (Devices) icon and tap Jarvis once. "
+                  "That is the sign-in: no password is typed anywhere else. Then press CHECK again.")
+
+
+def check():
+    """Setup step 6: install state, start the player, find the device, make Jarvis the playback device. -> (ok, plain words)."""
+    from . import spotifyd
+    if not connected():
+        return False, "Not connected yet: do the login step first."
+    if not spotifyd.binary():
+        return False, spotifyd.not_installed()
+    if not spotifyd.active():
+        ok, msg = spotifyd.start()
+        if not ok:
+            return False, msg
+        time.sleep(3)
+    d, msg = find_device()
+    if not d:
+        return False, msg
+    _, err = _api("PUT", "/me/player", {"device_ids": [d["id"]], "play": False})
+    if err:
+        return False, err
+    return True, "Found Jarvis and made it the playback device."
 
 
 def play_test():
     d, msg = find_device()
     if not d:
         return False, msg
+    _, err = _api("PUT", "/me/player", {"device_ids": [d["id"]], "play": False})      # playback moves to Jarvis first
+    if err:
+        return False, err
     _, err = _api("PUT", "/me/player/play?device_id=" + urllib.parse.quote(d["id"]), {"uris": [TEST_TRACK]})
-    return (False, err) if err else (True, "Playing a test song on Jarvis.")
+    if err:
+        return False, err
+    try:
+        from . import settings
+        settings.update(music_pref="spotify")                                          # it works: Spotify is the music source, YouTube stays the fallback
+    except Exception:
+        pass
+    return True, "Playing a test song on Jarvis. Spotify is now your music source."
 
 
 def parse_command(text):

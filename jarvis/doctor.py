@@ -42,7 +42,7 @@ def checks():
     add(mod("gi"), "python-gobject / GTK4 (the orb)", "install python-gobject, gtk4 and gtk4-layer-shell with your package manager", required=False)
     for c, hint, req in (("claude", "install Claude Code and log in with `claude` (the brain; no API key is used)", True), ("ffmpeg", "install ffmpeg", True), ("pw-record", "install pipewire (pw-record / pw-play)", True),
                          ("pw-play", "install pipewire", True), ("wpctl", "install wireplumber", True), ("chromium", "install chromium (the full-screen page)", True), ("hyprctl", "this is built for Hyprland", True),
-                         ("grim", "install grim (screenshots for look)", False), ("tesseract", "install tesseract (read this to me)", False), ("qrencode", "install qrencode (QR codes)", False),
+                         ("grim", "install grim (screenshots for look)", False), ("tesseract", "install tesseract (read this to me)", False), ("qrencode", "install qrencode (QR codes)", False), ("djpeg", "install libjpeg-turbo (djpeg: object tracking and desk presence)", False), ("zbarimg", "install zbar (barcodes and QR codes in pictures)", False), ("soffice", "install libreoffice (make that a spreadsheet / document)", False), ("systemd-inhibit", "install systemd (keeps the Go awake)", False),
                          ("wtype", "install wtype (dictation)", False), ("brightnessctl", "install brightnessctl (scenes, quiet hours)", False), ("yt-dlp", "install yt-dlp (video reader)", False),
                          ("notify-send", "install libnotify", False)):
         add(have(c), f"program {c}", hint, required=req)

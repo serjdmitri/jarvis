@@ -89,7 +89,7 @@ def run(intent):
         if not intent.get("to"):
             return {"speech": "Where to?", "expect": "directions"}
         maps.LAST["q"] = intent["to"]
-        spec, speech = maps.directions_spec(intent["to"], {"walk": "foot", "walking": "foot", "foot": "foot", "bike": "bike", "cycle": "bike"}.get(intent.get("mode", ""), "car"))
+        spec, speech = maps.directions_spec(intent["to"], {"walk": "foot", "walking": "foot", "foot": "foot", "bike": "bike", "cycle": "bike"}.get(intent.get("mode", "")))
         return {"speech": speech, "open": {"action": "show_map", "id": spec["id"]}} if spec else {"speech": speech}
     if n == "search_web":
         return None                                   # the brain already looked it up with its own tools; nothing is opened (a Google tab is never a fallback)

@@ -71,7 +71,6 @@ def get(src, path, fresh_s=7 * 86400):
     if have and time.time() - f.stat().st_mtime < fresh_s:
         try:
             data = f.read_bytes()
-            f.touch()
             STATS["hit"] += 1
             LAST.append((src, "hit")); del LAST[:-12]
             return data, ctype, "hit"
@@ -81,15 +80,18 @@ def get(src, path, fresh_s=7 * 86400):
     try:
         req = urllib.request.Request(url, headers={"User-Agent": UA})
         with urllib.request.urlopen(req, timeout=8) as r:
-            data = r.read(3_000_000)
+            data = r.read(3_000_001)
             ct = r.headers.get("Content-Type", "").split(";")[0] or ctype
             status = r.status
         LAST.append((src, status)); del LAST[:-12]
-        if status == 200 and data:
+        if status == 200 and data and len(data) <= 3_000_000:         # a tile cut off at the size limit is never cached
             DIR.mkdir(parents=True, exist_ok=True)
-            f.write_bytes(data)
+            tmp = f.with_name(f.name + ".part")
+            tmp.write_bytes(data)
+            tmp.replace(f)                                             # atomic: nobody reads a half-written tile
             STATS["miss"] += 1
-            if _size["n"] is None or time.time() % 20 < 1:
+            if time.time() - (_size["n"] or 0) > 30:                   # tidy at most every 30 s, not on every miss
+                _size["n"] = time.time()
                 threading.Thread(target=_evict, daemon=True).start()
             return data, ct, "miss"
     except urllib.error.HTTPError as e:

@@ -1,0 +1,94 @@
+# Phrase routing tests. One phrase per line:  phrase <TAB> expected route.  Routes: "skill: <name>" (a local skill answers), "look:<op>" (the camera view), "brain" (goes to the model).
+# Run: .venv/bin/python tests/run_phrases.py     Add every phrase you ever report as broken at the bottom, with what it SHOULD do.
+how long will it take to get to Starbucks	skill: maps_command
+how long to Starbucks	skill: maps_command
+how far is the airport	skill: maps_command
+time to get to the airport	skill: maps_command
+take me to Starbucks	skill: maps_command
+directions to the airport	skill: maps_command
+show me Tokyo	skill: maps_command
+go to Paris	skill: maps_command
+show the Eiffel Tower	skill: maps_command
+how long would it take to walk to the bank	skill: maps_command
+where is the nearest pharmacy	skill: maps_command
+find a coffee shop near me	skill: maps_command
+what do you see	look:fresh
+look at this	look:fresh
+what is this part	look:mode:read
+highlight the charger on my desk	look:box
+close the camera	look:close
+count the screws on my desk	look:mode:count
+help me connect these	look:mode:connect
+check my wiring	look:mode:wiring
+measure this next to a coin	look:mode:measure
+scan everything on my desk	look:box
+clear highlights	look:clear
+hey jarvis wake up	skill: wakeup
+are you there	skill: wakeup
+play some music	skill: music_command
+play my liked songs	skill: spotify_command
+play so what by miles davis	skill: music_command
+shuffle	brain
+pause the music	skill: music_command
+next song	skill: music_command
+what's playing	skill: music_command
+send that to my Mac	skill: send_command
+save this to my Mac	skill: mac_command
+send that to my phone	skill: send_command
+how much space is left	skill: office_command
+what is using the disk space	skill: office_command
+open that picture	skill: office_command
+make that a spreadsheet	skill: office_command
+set a timer for five minutes	skill: timer_command
+what time is it	skill: time_date
+what is the weather	skill: <lambda>
+remember that my favourite editor is Neovim	skill: vault_command
+what do you know about me	skill: memory_command
+show my memory map	skill: vault_command
+where did I leave off on the Pi project	skill: vault_command
+forget that	skill: vault_command
+show me a V8 engine in 3D	skill: holo_command
+show me a Raspberry Pi	skill: parts3d_command
+tell me a joke	brain
+how are you	brain
+what is the capital of France	brain
+who won the football match last night	brain
+explain how a transistor works	brain
+what's the difference between TCP and UDP	brain
+write me a haiku about the sea	brain
+what's two plus two	skill: maths
+show the clock after five minutes	skill: <lambda>
+speak faster	skill: <lambda>
+set up spotify	skill: spotify_command
+open the terminal	skill: open_command
+find a pizza place	brain
+circle back to the first point	brain
+what's that song	brain
+start a timer	brain
+put on my coat	brain
+count to ten	brain
+how long is a piece of string	brain
+thanks jarvis	brain
+what is using the disk space	skill: office_command
+open the camera	look:camera_on
+stop looking	look:close
+play the dune trailer	skill: visual_command
+show me pictures of a red panda	skill: visual_command
+what does a tapir look like	skill: visual_command
+how do I tie a tie	skill: answer
+set my home to Miami Beach	skill: set_home
+where am I	skill: maps_command
+mute the mic	brain
+remind me to call mum at five	brain
+what's on my reminders	skill: extras_command
+translate hello into French	brain
+give me my briefing	skill: extras_command
+tell me about the news	brain
+how are the markets	skill: markets_command
+walk	brain
+directions	skill: maps_command
+how far	skill: maps_command
+start the car	brain
+put on a song	skill: music_command
+start a timer for ten minutes	skill: timer_command
+save this to my Mac	skill: mac_command

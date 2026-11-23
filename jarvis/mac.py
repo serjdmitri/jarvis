@@ -137,6 +137,9 @@ def watch(notify, minutes=10):
             for p in _poll(since):
                 if p["type"] == "hello":
                     STATE["connected"] = time.time(); notify("connected", "Mac connected")
+                    if p.get("helper"):
+                        from . import machelper
+                        machelper.remember(str(p["helper"])[:80])       # the helper's own signed hello: its private network address
                 elif p["type"] == "ack":
                     r = str(p.get("result", ""))[:120]
                     STATE["acks"][str(p.get("id"))] = r
@@ -267,7 +270,7 @@ def parse_command(text):
         return {"speech": "Sending the summary to your phone.", "macsend": "report_phone"}
     if re.search(r"\b(?:send|show|open|put|get)\b.*\b(?:report|research|notes?)\b.*\bmac(?:book)?\b", low):
         return {"speech": "Sending the report to your Mac.", "macsend": "report"}
-    if re.search(r"\b(?:send|share|text|forward|push)\b.*\b(?:that|this|it|the video|the link|the page|the article|the map)\b.*\b(?:(?:to|onto) (?:my )?|on my )mac(?:book)?\b", low):   # only send/share/text: "show it on the map" (heard as "Mac") is the map
+    if re.search(r"\b(?:send|share|text|forward|push|save)\b.*\b(?:that|this|it|the video|the link|the page|the article|the map)\b.*\b(?:(?:to|onto) (?:my )?|on my )mac(?:book)?\b", low):   # only send/share/text: "show it on the map" (heard as "Mac") is the map
         return {"speech": "Sending it to your Mac.", "macsend": "current"}
     if re.search(r"\b(?:pair|connect|link)\b.*\bmac(?:book)?\b|\bmac(?:book)?\b.*\b(?:pairing|pair)\b", low) and not re.search(r"\bshow\b.*\bcode\b", low):
         return {"speech": "The pairing code is on screen. Type it on your Mac.", "mac": "pair"}

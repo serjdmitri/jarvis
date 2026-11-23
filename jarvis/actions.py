@@ -191,12 +191,12 @@ def _spotify_login(payload, assistant):
 @action("spotify_check")
 def _spotify_check(payload, assistant):
     from . import spotify
-    if not spotify.connected():
-        _guide("error", "Not connected yet: do the login step first.")
-        return {"message": "not connected"}
-    d, msg = spotify.find_device()
-    _guide("connected" if d else "error", msg)
-    return {"message": "found" if d else "no device"}
+    import threading
+    def work():
+        ok, msg = spotify.check()
+        _guide("connected" if ok else "error", msg)
+    threading.Thread(target=work, daemon=True).start()                  # starting the player takes a few seconds: never block the page
+    return {"message": "checking"}
 
 
 @action("spotify_test")

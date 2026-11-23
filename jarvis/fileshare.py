@@ -25,8 +25,8 @@ DEFAULT_CAP_MB = 500
 SHARES = {}                                           # token -> {path, name, size, sha, exp, used}
 _srv = {"loop": None, "runner": None, "thread": None, "ip": None}
 _lock = threading.Lock()
-SECRET_DIRS = (".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config/jarvis", ".claude", ".password-store", ".local/share/keyrings", ".config/gcloud", ".config/chromium", ".cache/jarvis-ui", ".mozilla")
-SECRET_NAMES = re.compile(r"(?:^|/)(?:id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|\.env.*|.*token.*|.*secret.*|.*password.*|mac\.json|settings\.json|spotify.*|hook_token)$", re.I)
+SECRET_DIRS = (".ssh", ".gnupg", ".aws", ".kube", ".docker", ".config/jarvis", ".claude", ".password-store", ".local/share/keyrings", ".config/gcloud", ".config/chromium", ".cache/jarvis-ui", ".mozilla", ".config/gh", ".config/Mac", ".gitconfig-credentials", ".local/share/claude")
+SECRET_NAMES = re.compile(r"(?:^|/)(?:id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|\.env.*|.*token.*|.*secret.*|.*password.*|mac\.json|settings\.json|spotify.*|hook_token|\.netrc|\.npmrc|\.git-credentials|\.bash_history|\.zsh_history|\.pgpass|\.pypirc|.*\.kdbx|.*_history)$", re.I)
 
 
 class Refused(Exception):
@@ -49,7 +49,7 @@ def check_source(path):
     """-> the real path of a file Jarvis may share, or raises Refused."""
     real = os.path.realpath(os.path.expanduser(str(path)))
     home = os.path.realpath(os.path.expanduser("~"))
-    if not (real == home or real.startswith(home + os.sep)) and not real.startswith(str(config.ROOT)):
+    if not (real == home or real.startswith(home + os.sep)) and not (real == str(config.ROOT) or real.startswith(str(config.ROOT) + os.sep)):
         raise Refused("That file is outside your home folder.")
     rel = os.path.relpath(real, home)
     if any(rel == d or rel.startswith(d + os.sep) for d in SECRET_DIRS) or SECRET_NAMES.search(real):
@@ -89,9 +89,15 @@ def find(name):
     return best[1] if best else None
 
 
-def stage(path, name=None):
-    """Copy a checked file into the outbox under a random name and register a one-time token. -> {"url","name","size","sha256","exp"}."""
+EXEC_EXT = {".app", ".pkg", ".dmg", ".command", ".sh", ".exe", ".bat", ".cmd", ".scr", ".jar", ".js", ".vbs", ".ps1", ".msi", ".com", ".py", ".pl", ".rb", ".workflow", ".terminal", ".dylib", ".so", ".apk", ".ipa"}
+
+
+def stage(path, name=None, kind="mac", on_complete=None):
+    """Copy a checked file into the outbox under a random name and register a one-time token. -> {"url","name","size","sha256","exp","sid"}.
+    kind "phone": programs are refused outright (the phone gets documents, pictures, models, zips), and `on_complete(name, size)` runs ONLY when the whole file has been served."""
     real = check_source(path)
+    if kind == "phone" and os.path.splitext(real)[1].lower() in EXEC_EXT:
+        raise Refused("I don't send programs or scripts to the phone.")
     OUT.mkdir(parents=True, exist_ok=True)
     os.chmod(OUT, 0o700)
     tok = secrets.token_urlsafe(32)
@@ -99,11 +105,31 @@ def stage(path, name=None):
     shutil.copyfile(real, dst)
     os.chmod(dst, 0o600)
     nm = re.sub(r"[^\w .()\[\]+-]", "_", name or os.path.basename(real))[:120] or "file"
-    s = {"path": str(dst), "name": nm, "size": os.path.getsize(dst), "sha": _sha(dst), "exp": time.time() + TTL_S, "used": False}
+    sid = hashlib.sha256(tok.encode()).hexdigest()[:10]                        # a handle for status lines: the token itself is never shown or logged
+    s = {"path": str(dst), "name": nm, "size": os.path.getsize(dst), "sha": _sha(dst), "exp": time.time() + TTL_S, "used": False, "kind": kind, "sid": sid, "covered": [], "served": 0, "on_complete": on_complete, "t_first": 0.0}
     with _lock:
         SHARES[tok] = s
+        PROOF[sid] = {"name": nm, "size": s["size"], "served": 0, "complete": False, "t": time.time(), "kind": kind}
     ip = ensure_server()
-    return {"url": f"http://{ip}:{PORT}/o/{tok}", "name": nm, "size": s["size"], "sha256": s["sha"], "exp": s["exp"]}
+    return {"url": f"http://{ip}:{PORT}/o/{tok}", "name": nm, "size": s["size"], "sha256": s["sha"], "exp": s["exp"], "sid": sid}
+
+
+PROOF = {}                                                                     # sid -> what the server SAW: bytes served and whether the whole file went out (the only proof a download is complete)
+
+
+def proof(sid):
+    return dict(PROOF.get(sid) or {})
+
+
+def _merge(cov):
+    cov.sort()
+    out = []
+    for a, b in cov:
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
 
 
 def zip_paths(paths, name="jarvis-files.zip"):
@@ -132,7 +158,7 @@ def _cleanup():
     now = time.time()
     with _lock:
         for tok, s in list(SHARES.items()):
-            if s["used"] or s["exp"] < now:
+            if (s["used"] and now - s.get("t_used", 0) > s.get("hold", 120)) or s["exp"] < now:
                 try:
                     os.unlink(s["path"])
                 except OSError:
@@ -141,19 +167,69 @@ def _cleanup():
         left = bool(SHARES)
     if not left:
         stop_server()
+    else:
+        _later(30)                                                     # something is still waiting or downloading: look again (a second share never goes uncleaned)
 
 
 async def _get(req):
+    """One-time download. The link stays valid until the WHOLE file has gone out (a half download can be finished within the 10 minutes) and then never again. Content-Disposition: attachment, so Safari
+    saves it to Downloads (Files > Downloads) instead of previewing it. Byte ranges are honoured (an interrupted download resumes). Completion = every byte served."""
     tok = req.match_info["token"]
     with _lock:
         s = SHARES.get(tok)
         ok = bool(s) and not s["used"] and s["exp"] > time.time()
-        if ok:
-            s["used"] = True                           # the first download is the only one
+        if ok and not s["t_first"]:
+            s["t_first"] = time.time()
     if not ok:
         raise web.HTTPNotFound()
-    resp = web.FileResponse(s["path"], headers={"Content-Disposition": 'attachment; filename="%s"' % s["name"].replace('"', "_"), "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
-    _later(120)
+    size = s["size"]
+    a, b = 0, size - 1
+    status = 200
+    rng = req.headers.get("Range", "")
+    m = re.fullmatch(r"bytes=(\d*)-(\d*)", rng.strip()) if rng else None
+    if m and (m.group(1) or m.group(2)):
+        if m.group(1):
+            a = int(m.group(1))
+            b = min(size - 1, int(m.group(2))) if m.group(2) else size - 1
+        else:
+            a = max(0, size - int(m.group(2)))
+        if a > b or a >= size:
+            raise web.HTTPRequestRangeNotSatisfiable(headers={"Content-Range": f"bytes */{size}"})
+        status = 206
+    headers = {"Content-Type": "application/octet-stream", "Content-Disposition": 'attachment; filename="%s"' % s["name"].replace('"', "_"), "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
+               "Accept-Ranges": "bytes", "Content-Length": str(b - a + 1)}
+    if status == 206:
+        headers["Content-Range"] = f"bytes {a}-{b}/{size}"
+    resp = web.StreamResponse(status=status, headers=headers)
+    await resp.prepare(req)
+    pos = a
+    try:
+        with open(s["path"], "rb") as f:
+            f.seek(a)
+            while pos <= b:
+                chunk = f.read(min(262144, b - pos + 1))
+                if not chunk:
+                    break
+                await resp.write(chunk)
+                with _lock:
+                    s["covered"] = _merge(s["covered"] + [[pos, pos + len(chunk)]])
+                    s["served"] = sum(y - x for x, y in s["covered"])
+                    PROOF[s["sid"]].update(served=s["served"], t=time.time())
+                pos += len(chunk)
+        await resp.write_eof()
+    except (ConnectionResetError, asyncio.CancelledError, OSError):
+        return resp                                                             # the phone stopped: what was served is counted, the link stays open for the rest
+    with _lock:
+        done = s["served"] >= size and s["covered"] == [[0, size]] and not s["used"]
+        if done:
+            s["used"] = True
+            s["t_used"], s["hold"] = time.time(), 120
+            PROOF[s["sid"]].update(complete=True, t=time.time())
+    if done:
+        cb = s.get("on_complete")
+        if cb:
+            threading.Thread(target=cb, args=(s["name"], size), daemon=True).start()
+        _later(130)
     return resp
 
 

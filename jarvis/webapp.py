@@ -203,11 +203,16 @@ class Server:
             raise web.HTTPForbidden()
         resp = web.StreamResponse(headers={"Content-Type": "multipart/x-mixed-replace; boundary=jvframe", "Cache-Control": "no-store"})
         await resp.prepare(request)
-        phonecam.RELAY.hold()
+        try:
+            phonecam.RELAY.hold()
+        except RuntimeError:
+            return resp
         last = -1
         try:
             idle = 0
             while True:
+                if request.transport is None or request.transport.is_closing():     # the page went away even though no write failed (frames stalled)
+                    break
                 with phonecam.RELAY.lock:
                     n, f = phonecam.RELAY.n, phonecam.RELAY.latest
                 if f and n != last:
@@ -291,13 +296,100 @@ class Server:
         d.mkdir(exist_ok=True)
         name = f"{slug}-{int(time.time())}.{kind}"
         (d / name).write_bytes(data)
-        for f in sorted(d.glob("*"))[:-30]:                           # keep the newest 30
+        for f in sorted(d.glob("*"), key=lambda x: x.stat().st_mtime)[:-30]:                           # keep the newest 30
             try:
                 f.unlink()
             except OSError:
                 pass
         self.assistant.last_export = str(d / name)
         return web.json_response({"ok": True, "name": name})
+
+    async def audio_api(self, req):
+        """Settings > Music: the Spotify player state and the audio outputs PipeWire knows (read only: nothing is changed, nothing is paired)."""
+        if not self._origin_ok(req):
+            raise web.HTTPForbidden()
+        from . import spotify, spotifyd
+        loop = asyncio.get_running_loop()
+        st = await loop.run_in_executor(None, spotifyd.state)
+        outs = await loop.run_in_executor(None, spotifyd.outputs)
+        return web.json_response({"player": st, "outputs": outs, "spotify": spotify.connected(), "max": spotifyd.max_volume()})
+
+    async def conn_warn_loop(self):
+        """No popup spam: a warning shows only when a link you are USING right now has been down for more than 10 seconds, and clears by itself."""
+        from . import connections, spotify_cli, wifi
+        last, off_since, shown = None, 0.0, False
+        while True:
+            await asyncio.sleep(10)
+            try:
+                ok, _ssid = await asyncio.get_running_loop().run_in_executor(None, connections._wifi)           # no known network in range for 30 s: the Wi-Fi screen opens by itself (once per outage), so no keyboard is needed
+                if ok:
+                    off_since, shown = 0.0, False
+                else:
+                    off_since = off_since or time.time()
+                    if time.time() - off_since > 30 and not shown:
+                        r = await asyncio.get_running_loop().run_in_executor(None, wifi.scan, True)
+                        if not r.get("known_nearby"):
+                            shown = True
+                            self.bcast({"t": "wifi_screen"})
+                a = self.assistant
+                use = []
+                it = spotify_cli.LAST.get("item")
+                if it and time.time() - spotify_cli.LAST.get("t", 0) < 600:
+                    use += ["spotify", "internet"]
+                if a.look.get("open") and a.look.get("source") == "phone camera":
+                    use.append("phone_cam")
+                lines = await asyncio.get_running_loop().run_in_executor(None, connections.warnings, use)
+                if lines != last:
+                    last = lines
+                    self.bcast({"t": "conn_warn", "lines": lines})
+            except Exception:
+                pass
+
+    async def wifi_api(self, req):
+        """Settings > Wi-Fi: the networks around (read only). ?rescan=1 asks the radio to scan again."""
+        if not self._origin_ok(req):
+            raise web.HTTPForbidden()
+        from . import wifi
+        r = await asyncio.get_running_loop().run_in_executor(None, wifi.scan, req.query.get("rescan") == "1")
+        return web.json_response(r)
+
+    async def wifi_connect(self, req):
+        """Connect to a network from the last scan. The password comes in the request body, goes to nmcli on stdin, and is never logged or kept."""
+        if not self._origin_ok(req):
+            raise web.HTTPForbidden()
+        from . import wifi
+        try:
+            d = await req.json()
+        except ValueError:
+            raise web.HTTPBadRequest()
+        ok, msg = await asyncio.get_running_loop().run_in_executor(None, wifi.connect, str(d.get("ssid", "")), (str(d["password"])[:128] if d.get("password") else None))
+        return web.json_response({"ok": ok, "message": msg})
+
+    async def conn_api(self, req):
+        """Settings > Connections: every link with green/amber/red, plain words and the last success. Read only: never starts a test."""
+        if not self._origin_ok(req):
+            raise web.HTTPForbidden()
+        from . import connections
+        rows = await asyncio.get_running_loop().run_in_executor(None, connections.snapshot)
+        return web.json_response({"rows": rows})
+
+    async def conn_act(self, req):
+        """TEST or FIX one link (POST /api/connections/<id>/test|fix). A phone test can take a minute: it runs in a thread and the page polls."""
+        if not self._origin_ok(req):
+            raise web.HTTPForbidden()
+        from . import connections
+        i, op = req.match_info["id"], req.match_info["op"]
+        if i not in connections.ORDER or op not in ("test", "fix"):
+            raise web.HTTPNotFound()
+        a = self.assistant
+        def go():
+            try:
+                connections.test(i, a) if op == "test" else connections.fix(i)
+            except Exception as e:
+                connections._set(i, "red", "That check failed: " + type(e).__name__)
+        threading.Thread(target=go, daemon=True).start()
+        connections._set(i, "amber", "Testing…" if op == "test" else "Fixing…")
+        return web.json_response({"ok": True})
 
     async def idle_api(self, req):
         """What the idle screen shows besides the clock: the weather for the home area and the next reminder. The weather is cached for 10 minutes."""
@@ -385,6 +477,19 @@ class Server:
                 s["gmaps"] = maps.gmaps_link((s["origin"]["lat"], s["origin"]["lon"]), (s["dest"]["lat"], s["dest"]["lon"]), s["mode"])
         return web.json_response({"ok": True})
 
+    async def map_alt(self, req):
+        """The arrows on a route map: another match for the same name (the next Starbucks)."""
+        s = self._spec(req)
+        try:
+            i = int(req.query.get("i", ""))
+        except ValueError:
+            raise web.HTTPBadRequest()
+        r = await asyncio.get_running_loop().run_in_executor(None, maps.pick_alt, s["id"], i)
+        if not r:
+            raise web.HTTPNotFound()
+        opener.EMBED["page_url"] = r.get("gmaps") or opener.EMBED.get("page_url")
+        return web.json_response(r)
+
     async def map_goto(self, req):
         s = self._spec(req)
         try:
@@ -459,13 +564,13 @@ class Server:
         a = self.assistant
         try:                                                          # "restarted because: ..." for a minute after the supervisor restarted something
             rr = json.loads((config.ROOT / "run" / "restart_reason.json").read_text())
-            if time.time() - rr["t"] < 90:
+            if time.time() - rr["t"] < 90 and int(rr.get("n", 1)) >= 3:                # a quiet self-heal: nothing is shown for a normal restart, only when it keeps happening (3 times within the supervisor's window)
                 await ws.send_str(json.dumps({"t": "restarted", "what": rr["what"], "why": rr["why"]}))
         except (OSError, ValueError, KeyError):
             pass
         for pr in (self._settings_problems or [])[:1]:
             await ws.send_str(json.dumps({"t": "restarted", "what": "settings", "why": "a saved value is invalid: " + pr}))
-        await ws.send_str(json.dumps({"t": "hello", "state": UI_STATE.get(a.state, a.state), "history": self.history,
+        await ws.send_str(json.dumps({"t": "hello", "build": max((f.stat().st_mtime_ns for f in WEB.glob("*") if f.suffix in (".js", ".css", ".html")), default=0), "state": UI_STATE.get(a.state, a.state), "history": self.history,
                                       "muted": self.muted, "source": a.source, "persona": a.persona, "personas": personas.public(), "handsfree": bool(a.hf), "muted": a.muted, "followup": a.followup, "prefs": prefs.public(a.persona)}))
         try:
             async for m in ws:
@@ -531,7 +636,7 @@ class Server:
                 except (ValueError, TypeError):
                     pass
             threading.Thread(target=go, daemon=True).start()
-        elif t == "ask" and m.get("text") in ("pair my Mac", "set up Spotify", "show the clock now", "set up the iphone voice", "what happened", "take the tour"):      # fixed requests from the settings buttons
+        elif t == "ask" and m.get("text") in ("pair my Mac", "set up Spotify", "show the clock now", "set up the iphone voice", "what happened", "take the tour", "what couldn't you understand", "check my connections"):      # fixed requests from the settings buttons
             a.ask_text(m["text"])
         elif t == "sfx" and m.get("ev") in ("open", "close", "menu"):
             from . import sounds
@@ -541,6 +646,9 @@ class Server:
         elif t == "presence" and m.get("op") in ("pause", "resume", "off", "on"):
             from . import presence
             threading.Thread(target=a.run_presence, args=({"kind": m["op"]},), daemon=True).start()
+        elif t == "perf":
+            from . import perf
+            self.bcast({"t": "card", "card": perf.card()}) if False else a.on_card(perf.card())
         elif t == "typed" and isinstance(m.get("text"), str) and m["text"].strip():           # the chat widget / type line: the same router as voice
             img = None
             mm = re.fullmatch(r"data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)", m.get("image") or "") if isinstance(m.get("image"), str) and len(m.get("image") or "") < 8_500_000 else None
@@ -550,6 +658,8 @@ class Server:
                 img = str(config.SHOTS_DIR / f"shot-{int(time.time() * 1000)}.{'jpg' if mm.group(1) == 'jpeg' else mm.group(1)}")
                 with open(img, "wb") as f:
                     f.write(base64.b64decode(mm.group(2)))
+                for old in sorted([x for x in config.SHOTS_DIR.glob("shot-*.*") if x.suffix in (".png", ".webp")], key=lambda x: x.stat().st_mtime)[:-4]:
+                    old.unlink(missing_ok=True)                           # typed pictures are not kept forever
             threading.Thread(target=a.ask_text, args=(m["text"].strip()[:600],), kwargs={"image": img} if img else {}, daemon=True).start()
         elif t == "scratch_save":
             desk.scratch_put(str(m.get("text", "")))
@@ -567,9 +677,16 @@ class Server:
                 a.look_select(int(m.get("i")))
             except (TypeError, ValueError):
                 pass
-        elif t == "look_op" and m.get("op") in ("live", "freeze", "close", "clear", "phone", "highlight", "scan"):
+        elif t == "look_op" and m.get("op") in ("live", "freeze", "close", "clear", "phone", "highlight", "scan", "connect", "read", "count", "measure", "wiring", "connected"):
             if m["op"] == "phone":
                 threading.Thread(target=lambda: a.run_send("phone", "look"), daemon=True).start()
+            elif m["op"] in ("connect", "read", "count", "measure", "wiring"):
+                q = {"connect": "help me connect these", "read": "read the label on this", "count": "count the items on the desk", "measure": "measure this with a card", "wiring": "check my wiring"}[m["op"]]
+                threading.Thread(target=a.ask_text, args=(q,), daemon=True).start()
+            elif m["op"] == "connected":
+                g = getattr(a, "_guide", None)
+                if g:
+                    g.confirm(); a.say("Good. Verify before powering.") if g.electronics else a.say("Good, connected.")
             elif m["op"] in ("highlight", "scan"):
                 threading.Thread(target=a.ask_text, args=("highlight everything" if m["op"] == "highlight" else "scan everything on my desk",), daemon=True).start()
             elif m["op"] == "close":
@@ -592,6 +709,12 @@ class Server:
             threading.Thread(target=a.set_handsfree, args=(bool(m.get("on")),), daemon=True).start()
         elif t == "beat":
             self.ui_beat = time.time()
+        elif t == "system" and m.get("op") in ("restart_jarvis", "reboot", "poweroff", "screen_off", "screen_on", "brightness"):     # a touch on a SYSTEM button (restart/shut down only with the page's CONFIRM press)
+            from . import sysctl
+            def go():
+                ok, say = sysctl.run(m["op"], m.get("arg"), bool(m.get("confirm")))
+                a.say(say)
+            threading.Thread(target=go, daemon=True).start()
         elif t == "dictate":                                   # hold the on-screen mic button / the key: words are typed into the focused window
             threading.Thread(target=self.dictation.start if m.get("down") else self.dictation.stop, daemon=True).start()
         elif t == "mkt_closed":
@@ -646,6 +769,12 @@ class Server:
             await asyncio.sleep(10)
             try:
                 await asyncio.get_running_loop().run_in_executor(None, self.assistant.buddy_tick)
+                from . import perf
+                g = perf.governor()
+                if g:                                                       # no fan: too hot -> lite mode by itself (said once), back to normal when it has cooled
+                    self.bcast({"t": "thermal", "on": g == "hot", "temp": round(perf.cpu_temp_c() or 0)})
+                    if g == "hot":
+                        self.assistant.say("It is running hot, so I switched to lite mode until it cools down.")
             except Exception as e:
                 print("[buddy] failed:", type(e).__name__, flush=True)
 
@@ -748,7 +877,7 @@ class Server:
         """jarvisctl socket: start | stop | look | reset | show | log | quit | status"""
         a = self.assistant
         try:
-            cmd = (await reader.readline()).decode().strip()
+            cmd = (await reader.readline()).decode(errors="replace").strip() or "status"        # an empty line is just a status check, never a crash
             extra = ""
             if cmd == "start":
                 a.press()
@@ -810,6 +939,10 @@ class Server:
                 threading.Thread(target=a.run_open, args=({"action": "focus_jarvis", "label": "Jarvis"},), daemon=True).start()
             elif cmd.startswith("ask "):                          # dev/test: a text request, as if it had been transcribed
                 threading.Thread(target=a.ask_text, args=(cmd[4:],), daemon=True).start()
+            elif cmd.startswith("testlook ") and os.environ.get("JARVIS_NO_DESKTOP"):      # tests only (the throwaway server): pretend the camera view is open or closed
+                a.look["open"] = cmd.split()[1] == "open"
+                if a.look["open"]:
+                    a.look.setdefault("boxes", [])
             elif cmd.startswith("followup "):
                 a.set_followup(cmd.split()[1] == "on")
             elif cmd.startswith("listen "):
@@ -841,12 +974,19 @@ class Server:
         self.dictation = dictate.Dictation(self.assistant, lambda text, live: self.loop.call_soon_threadsafe(self.bcast, {"t": "caption", "text": text, "live": live}))
         @web.middleware
         async def nocache(req, handler):
+            if not self._origin_ok(req):                              # EVERY route: only this page on 127.0.0.1 (a web page on another site, or a rebinding trick, gets nothing)
+                raise web.HTTPForbidden()
             resp = await handler(req)
             resp.headers.setdefault("Cache-Control", "no-store")
             return resp
         app = web.Application(middlewares=[nocache])
         app.router.add_get("/", self.index)
         app.router.add_get("/api/idle", self.idle_api)
+        app.router.add_get("/api/audio", self.audio_api)
+        app.router.add_get("/api/connections", self.conn_api)
+        app.router.add_get("/api/wifi", self.wifi_api)
+        app.router.add_post("/api/wifi/connect", self.wifi_connect)
+        app.router.add_post("/api/connections/{id}/{op}", self.conn_act)
         app.router.add_post("/api/holo/export", self.holo_export_api)
         app.router.add_get("/api/markets/pulse", self.mkt_pulse_api)
         app.router.add_get("/api/markets/chart", self.mkt_chart_api)
@@ -868,6 +1008,7 @@ class Server:
         app.router.add_get("/api/tc/{src}/{path:.*}", self.tile_proxy)
         app.router.add_post("/api/map/{id}/mode", self.map_mode)
         app.router.add_post("/api/map/{id}/goto", self.map_goto)
+        app.router.add_post("/api/map/{id}/alt", self.map_alt)
         app.router.add_post("/api/map/{id}/send", self.map_send)
         app.router.add_post("/api/map/{id}/confirm", self.map_confirm)
         app.router.add_post("/api/map/{id}/change", self.map_change)
@@ -881,6 +1022,10 @@ class Server:
         await web.TCPSite(runner, "127.0.0.1", PORT).start()
         if config.SOCK.exists():
             config.SOCK.unlink()
+        from . import awake
+        awake.start()                                                  # no screen saver / lock / idle while Jarvis is open; released when it closes
+        import atexit
+        atexit.register(awake.stop)
         await asyncio.start_unix_server(self.control, path=str(config.SOCK))
         self.assistant.preload()
         asyncio.ensure_future(self.thermal_loop())
@@ -889,6 +1034,7 @@ class Server:
         asyncio.ensure_future(self.briefing_loop())
         asyncio.ensure_future(self.quiet_loop())
         asyncio.ensure_future(self.buddy_loop())
+        asyncio.ensure_future(self.conn_warn_loop())
         asyncio.ensure_future(self.market_alert_loop())
         from . import news, weather
         if settings.get("desk_presence"):
@@ -925,6 +1071,7 @@ class Server:
 
 
 def main():
+    config.harden()
     asyncio.run(Server().run())
 
 
